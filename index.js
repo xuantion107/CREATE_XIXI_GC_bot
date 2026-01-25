@@ -15,10 +15,10 @@ const QRCode = require('qrcode');
 
 /**
  * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
- * v2.8.0 - Language Selection UI Update
+ * v2.9.0 - Enhanced Visual Language Selection & Confirmation
  */
 
-const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
+const TG_BOT_TOKEN = 'MASUKKAN_TOKEN_BOT_TELEGRAM_DISINI';
 const bot = new Telegraf(TG_BOT_TOKEN);
 const sockets = new Map(); // chatId -> sock
 const DB_PATH = path.join(__dirname, 'db.json');
@@ -31,18 +31,18 @@ const saveDb = () => fs.writeJsonSync(DB_PATH, db);
 // --- Localization Support ---
 const strings = {
     ID: {
-        welcome: 'Selamat datang! Kelola WhatsApp Anda via Telegram.',
+        welcome: 'Selamat datang! Kelola WhatsApp Anda via Telegram.\n\nSilakan pilih menu di bawah ini:',
         login_menu: 'Silakan pilih metode masuk:',
         input_num: 'Ketik nomor WA Anda (Contoh: 62812xxx):',
         pairing_code: (code) => `Kode Pairing Anda: *${code}*`,
         qr_msg: 'Scan QR Code ini untuk login:',
-        loading: 'Loading bos...',
+        loading: 'Sedang memproses, harap tunggu...',
         connected: '✅ WhatsApp Terhubung!',
         disconnected: '❌ Koneksi terputus.',
         logout_msg: 'Sesi telah dihapus dan logout berhasil.',
         creating_single: (name) => `[${name}] Berhasil di Buat✅`,
         create_summary: (total, requested) => `Total: ${total}/${requested} grup telah selesai dibuat.`,
-        lang_switched: 'Bahasa diubah ke Bahasa Indonesia.',
+        lang_switched: 'Bahasa berhasil diubah ke Bahasa Indonesia 🇮🇩',
         export_header: 'DAFTAR LINK GRUP\n\n',
         export_item: (name, link, date) => `Nama Group: ${name}\nLink grup: ${link}\nTanggal pembuatan: ${date}\n\n`,
         input_join: 'Kirim link grup WhatsApp (Satu per baris):',
@@ -50,6 +50,15 @@ const strings = {
         join_fail: (nameOrLink) => `❌ Cannot join [${nameOrLink}]`,
         join_success: (name) => `✅ Berhasil masuk: ${name}`,
         done: 'DONE✅',
+        btn: {
+            login: '🔐 Masuk',
+            logout: '🚪 Keluar',
+            create: '👥 Buat Grup',
+            links: '🔗 Ambil Link',
+            join: '📥 Gabung Grup',
+            lang: '🌐 Bahasa',
+            back: '⬅️ Kembali'
+        },
         menu: {
             ann: 'Batas Pesan',
             lock: 'Kunci Info',
@@ -57,18 +66,18 @@ const strings = {
         }
     },
     EN: {
-        welcome: 'Welcome! Manage your WhatsApp via Telegram.',
+        welcome: 'Welcome! Manage your WhatsApp via Telegram.\n\nPlease select a menu below:',
         login_menu: 'Please choose login method:',
         input_num: 'Enter your WA Number (Example: 62812xxx):',
         pairing_code: (code) => `Your Pairing Code: *${code}*`,
         qr_msg: 'Scan this QR Code to login:',
-        loading: 'Loading sir...',
+        loading: 'Processing, please wait...',
         connected: '✅ WhatsApp Connected!',
         disconnected: '❌ Connection closed.',
         logout_msg: 'Session deleted and logout successful.',
         creating_single: (name) => `[${name}] Created Successfully✅`,
         create_summary: (total, requested) => `Total: ${total}/${requested} groups have been created.`,
-        lang_switched: 'Language switched to English.',
+        lang_switched: 'Language successfully switched to English 🇬🇧',
         export_header: 'GROUP LINK LIST\n\n',
         export_item: (name, link, date) => `Group Name: ${name}\nGroup link: ${link}\nCreation date: ${date}\n\n`,
         input_join: 'Send WhatsApp group links (One per line):',
@@ -76,6 +85,15 @@ const strings = {
         join_fail: (nameOrLink) => `❌ Cannot join [${nameOrLink}]`,
         join_success: (name) => `✅ Successfully joined: ${name}`,
         done: 'DONE✅',
+        btn: {
+            login: '🔐 Login',
+            logout: '🚪 Logout',
+            create: '👥 Create Group',
+            links: '🔗 Get Links',
+            join: '📥 Join Group',
+            lang: '🌐 Language',
+            back: '⬅️ Back'
+        },
         menu: {
             ann: 'Restrict Msg',
             lock: 'Lock Info',
@@ -160,11 +178,14 @@ const langKbd = () => Markup.inlineKeyboard([
     [Markup.button.callback('🇬🇧 English', 'set_lang_en')]
 ]);
 
-const mainKbd = (chatId) => Markup.inlineKeyboard([
-    [Markup.button.callback('🔐 Masuk', 'login_menu'), Markup.button.callback('🚪 Keluar', 'logout')],
-    [Markup.button.callback('👥 Buat Grup', 'create_settings'), Markup.button.callback('🔗 Ambil Link', 'get_links')],
-    [Markup.button.callback('📥 Gabung Grup', 'join_menu'), Markup.button.callback('🌐 Bahasa', 'switch_lang')]
-]);
+const mainKbd = (chatId) => {
+    const t = getT(chatId);
+    return Markup.inlineKeyboard([
+        [Markup.button.callback(t.btn.login, 'login_menu'), Markup.button.callback(t.btn.logout, 'logout')],
+        [Markup.button.callback(t.btn.create, 'create_settings'), Markup.button.callback(t.btn.links, 'get_links')],
+        [Markup.button.callback(t.btn.join, 'join_menu'), Markup.button.callback(t.btn.lang, 'switch_lang')]
+    ]);
+};
 
 const settingsKbd = (chatId) => {
     const s = db.users[chatId].settings;
@@ -174,7 +195,7 @@ const settingsKbd = (chatId) => {
         [Markup.button.callback(`${s.lock ? '✅' : '❌'} ${t.menu.lock}`, 'toggle_lock')],
         [Markup.button.callback(`${s.approve ? '✅' : '❌'} ${t.menu.approve}`, 'toggle_approve')],
         [Markup.button.callback('🚀 EXECUTE CREATE', 'start_create_process')],
-        [Markup.button.callback('⬅️ Kembali', 'back_main')]
+        [Markup.button.callback(t.btn.back, 'back_main')]
     ]);
 };
 
@@ -198,22 +219,27 @@ bot.start((ctx) => {
     ctx.reply(getT(chatId).welcome, mainKbd(chatId));
 });
 
-bot.action('set_lang_id', (ctx) => {
+bot.action('set_lang_id', async (ctx) => {
     db.users[ctx.chat.id].lang = 'ID';
     saveDb();
-    ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id));
+    const t = strings.ID;
+    await ctx.answerCbQuery(t.lang_switched);
+    ctx.editMessageText(t.welcome, mainKbd(ctx.chat.id));
 });
 
-bot.action('set_lang_en', (ctx) => {
+bot.action('set_lang_en', async (ctx) => {
     db.users[ctx.chat.id].lang = 'EN';
     saveDb();
-    ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id));
+    const t = strings.EN;
+    await ctx.answerCbQuery(t.lang_switched);
+    ctx.editMessageText(t.welcome, mainKbd(ctx.chat.id));
 });
 
 bot.action('login_menu', (ctx) => {
-    ctx.editMessageText(getT(ctx.chat.id).login_menu, Markup.inlineKeyboard([
+    const t = getT(ctx.chat.id);
+    ctx.editMessageText(t.login_menu, Markup.inlineKeyboard([
         [Markup.button.callback('📸 Scan QR', 'login_qr'), Markup.button.callback('🔢 Pairing Code', 'login_pairing')],
-        [Markup.button.callback('⬅️ Kembali', 'back_main')]
+        [Markup.button.callback(t.btn.back, 'back_main')]
     ]));
 });
 
@@ -251,6 +277,7 @@ bot.action('logout', async (ctx) => {
 });
 
 bot.action('create_settings', (ctx) => {
+    const t = getT(ctx.chat.id);
     ctx.editMessageText('Pengaturan Grup:', settingsKbd(ctx.chat.id));
 });
 
@@ -431,4 +458,4 @@ bot.on('text', async (ctx) => {
 });
 
 bot.launch().then(() => console.log('Bot Active'));
-        
+                                      
