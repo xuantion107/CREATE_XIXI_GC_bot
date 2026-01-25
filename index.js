@@ -15,7 +15,7 @@ const QRCode = require('qrcode');
 
 /**
  * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
- * Robust Error Handling & Anti-Spam Logic
+ * Robust Error Handling & Customized Link Export
  */
 
 const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
@@ -31,7 +31,7 @@ const saveDb = () => fs.writeJsonSync(DB_PATH, db);
 // --- Localization Support ---
 const strings = {
     ID: {
-        welcome: 'Selamat datang! Kelola WhatsApp Anda via Telegram.',
+        welcome: 'Selamat datang! OWNER .',
         login_menu: 'Silakan pilih metode masuk:',
         input_num: 'Ketik nomor WA Anda (Contoh: 62812xxx):',
         pairing_code: (code) => `Kode Pairing Anda: *${code}*`,
@@ -43,8 +43,8 @@ const strings = {
         creating_single: (name) => `[${name}] Berhasil di Buat✅`,
         create_summary: (total, requested) => `Total: ${total}/${requested} grup telah selesai dibuat.`,
         lang_switched: 'Bahasa diubah ke Bahasa Indonesia.',
-        export_header: '📦 *DAFTAR LINK GRUP* (Urut Tgl Create)\n\n',
-        export_item: (name, link, date) => `📌 *Nama:* ${name}\n🔗 *Link:* ${link}\n📅 *Dibuat:* ${date}\n\n`,
+        export_header: 'DAFTAR LINK GRUP\n\n',
+        export_item: (name, link, year) => `(${name})\nLink: ${link}\nTahun Pembuatan : ${year}\n\n`,
         menu: {
             ann: 'Batas Pesan',
             lock: 'Kunci Info',
@@ -64,8 +64,8 @@ const strings = {
         creating_single: (name) => `[${name}] Created Successfully✅`,
         create_summary: (total, requested) => `Total: ${total}/${requested} groups have been created.`,
         lang_switched: 'Language switched to English.',
-        export_header: '📦 *GROUP LINK LIST* (Sorted by Creation)\n\n',
-        export_item: (name, link, date) => `📌 *Name:* ${name}\n🔗 *Link:* ${link}\n📅 *Created:* ${date}\n\n`,
+        export_header: 'GROUP LINK LIST\n\n',
+        export_item: (name, link, year) => `(${name})\nLink: ${link}\nCreation Year : ${year}\n\n`,
         menu: {
             ann: 'Restrict Msg',
             lock: 'Lock Info',
@@ -248,6 +248,7 @@ bot.action('get_links', async (ctx) => {
 
     try {
         const groups = await sock.groupFetchAllParticipating();
+        // Convert to array and sort by creation date (oldest first)
         const groupList = Object.values(groups).sort((a, b) => a.creation - b.creation);
 
         let fullMessage = t.export_header;
@@ -256,15 +257,14 @@ bot.action('get_links', async (ctx) => {
             try {
                 const inviteCode = await sock.groupInviteCode(group.id);
                 const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
-                const creationDate = new Date(group.creation * 1000).toLocaleString('id-ID', {
-                    day: '2-digit', month: '2-digit', year: 'numeric',
-                    hour: '2-digit', minute: '2-digit'
-                });
+                // Extract only Year from the creation timestamp
+                const year = new Date(group.creation * 1000).getFullYear();
 
-                const item = t.export_item(group.subject, inviteLink, creationDate);
+                const item = t.export_item(group.subject, inviteLink, year);
                 
+                // Check Telegram message limit (4096)
                 if ((fullMessage + item).length > 4000) {
-                    await ctx.reply(fullMessage, { parse_mode: 'Markdown' });
+                    await ctx.reply(fullMessage);
                     fullMessage = item;
                 } else {
                     fullMessage += item;
@@ -274,8 +274,10 @@ bot.action('get_links', async (ctx) => {
             }
         }
 
-        if (fullMessage) {
-            await ctx.reply(fullMessage, { parse_mode: 'Markdown' });
+        if (fullMessage && fullMessage !== t.export_header) {
+            await ctx.reply(fullMessage);
+        } else if (fullMessage === t.export_header) {
+            await ctx.reply('Tidak ada grup ditemukan.');
         }
     } catch (e) {
         ctx.reply('Gagal mengambil data grup: ' + e.message);
@@ -306,7 +308,6 @@ bot.on('text', async (ctx) => {
         saveDb();
     } else if (user.step === 'await_name') {
         const inputName = ctx.message.text.trim();
-        // WhatsApp group name max 25. We append " #XX", so max base name is 21.
         if (inputName.length === 0 || inputName.length > 21) {
             return ctx.reply('⚠️ Nama grup tidak valid atau terlalu panjang (Maks 21 karakter agar penomoran muat).');
         }
@@ -327,11 +328,9 @@ bot.on('text', async (ctx) => {
         for (let i = 1; i <= count; i++) {
             const groupName = `${user.tmpName} #${i}`;
             try {
-                // Robust Group Creation
                 const group = await sock.groupCreate(groupName, []);
                 const s = user.settings;
                 
-                // apply settings one by one with internal error catching
                 try {
                     if (s.ann) await sock.groupSettingUpdate(group.id, 'announcement');
                     if (s.lock) await sock.groupSettingUpdate(group.id, 'locked');
@@ -343,7 +342,6 @@ bot.on('text', async (ctx) => {
                 ctx.reply(t.creating_single(groupName));
                 successCount++;
                 
-                // Jeda 5 detik antar pembuatan (Anti-Ban)
                 if (i < count) await new Promise(resolve => setTimeout(resolve, 5000));
             } catch (e) {
                 console.error('Group Creation Error:', groupName, e.message);
@@ -358,4 +356,4 @@ bot.on('text', async (ctx) => {
 });
 
 bot.launch().then(() => console.log('Bot Active'));
-                         
+            
