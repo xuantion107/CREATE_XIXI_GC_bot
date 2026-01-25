@@ -18,7 +18,7 @@ const QRCode = require('qrcode');
  * Optimized for Dual Login (QR/Pairing) & Mass Group Creation
  */
 
-const TG_BOT_TOKEN = 'MASUKKAN_TOKEN_BOT_TELEGRAM_DISINI';
+const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
 const bot = new Telegraf(TG_BOT_TOKEN);
 const sockets = new Map(); // chatId -> sock
 const DB_PATH = path.join(__dirname, 'db.json');
