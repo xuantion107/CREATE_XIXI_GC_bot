@@ -15,7 +15,7 @@ const QRCode = require('qrcode');
 
 /**
  * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
- * Robust Error Handling, Link Export & Mass Join Feature
+ * v2.8.0 - Language Selection UI Update
  */
 
 const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
@@ -155,6 +155,11 @@ async function startWA(chatId, phoneNumber = null, isQRMode = false) {
 }
 
 // --- Keyboards ---
+const langKbd = () => Markup.inlineKeyboard([
+    [Markup.button.callback('🇮🇩 Indonesia', 'set_lang_id')],
+    [Markup.button.callback('🇬🇧 English', 'set_lang_en')]
+]);
+
 const mainKbd = (chatId) => Markup.inlineKeyboard([
     [Markup.button.callback('🔐 Masuk', 'login_menu'), Markup.button.callback('🚪 Keluar', 'logout')],
     [Markup.button.callback('👥 Buat Grup', 'create_settings'), Markup.button.callback('🔗 Ambil Link', 'get_links')],
@@ -178,14 +183,31 @@ bot.start((ctx) => {
     const chatId = ctx.chat.id;
     if (!db.users[chatId]) {
         db.users[chatId] = { 
-            lang: 'ID', 
+            lang: null, 
             isConnected: false, 
             lastQrId: null,
             settings: { ann: false, lock: false, approve: false } 
         };
         saveDb();
     }
+    
+    if (!db.users[chatId].lang) {
+        return ctx.reply('🌐 Pilih Bahasa / Select Language', langKbd());
+    }
+    
     ctx.reply(getT(chatId).welcome, mainKbd(chatId));
+});
+
+bot.action('set_lang_id', (ctx) => {
+    db.users[ctx.chat.id].lang = 'ID';
+    saveDb();
+    ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id));
+});
+
+bot.action('set_lang_en', (ctx) => {
+    db.users[ctx.chat.id].lang = 'EN';
+    saveDb();
+    ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id));
 });
 
 bot.action('login_menu', (ctx) => {
@@ -274,7 +296,6 @@ bot.action('get_links', async (ctx) => {
                 const inviteCode = await sock.groupInviteCode(group.id);
                 const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
                 
-                // Format tanggal lengkap: DD/MM/YYYY HH:mm
                 const date = new Date(group.creation * 1000).toLocaleString('id-ID', {
                     day: '2-digit', 
                     month: '2-digit', 
@@ -307,10 +328,7 @@ bot.action('get_links', async (ctx) => {
 });
 
 bot.action('switch_lang', (ctx) => {
-    const current = db.users[ctx.chat.id].lang;
-    db.users[ctx.chat.id].lang = current === 'ID' ? 'EN' : 'ID';
-    saveDb();
-    ctx.reply(getT(ctx.chat.id).lang_switched, mainKbd(ctx.chat.id));
+    ctx.editMessageText('🌐 Pilih Bahasa / Select Language', langKbd());
 });
 
 bot.action('back_main', (ctx) => ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id)));
@@ -413,4 +431,4 @@ bot.on('text', async (ctx) => {
 });
 
 bot.launch().then(() => console.log('Bot Active'));
-            
+        
