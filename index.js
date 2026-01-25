@@ -13,152 +13,255 @@ const {
     generateWAMessageFromContent, 
     generateMessageID, 
     downloadContentFromMessage, 
-    makeCacheableSignalKeyStore, 
-    getAggregateVotesInPoll 
+    makeCacheableSignalKeyStore
 } = require("@whiskeysockets/baileys");
 const { Telegraf, Markup } = require('telegraf');
 const pino = require('pino');
 const { Boom } = require('@hapi/boom');
-const fs = require('fs');
+const fs = require('fs-extra');
 const qrcode = require('qrcode');
+const path = require('path');
 
-// --- Konfigurasi ---
-const TG_BOT_TOKEN = '8374794267:AAEk7qwI7XZLoinCFBh6iu2jqUD3BRtfXIc';
-const SESSION_PATH = './session';
+// --- Localization ---
+const strings = {
+    ID: {
+        welcome: 'Selamat datang di WA-TG Bot Orchestrator. Silakan login untuk memulai.',
+        choose_method: 'Pilih Metode Login:',
+        enter_number: 'Masukkan nomor WhatsApp Anda (format: 628xxx):',
+        pairing_code_msg: 'Kode Pairing Anda adalah: ',
+        qr_scan: 'Scan QR Code ini menggunakan WhatsApp Anda:',
+        logged_in: '✅ WhatsApp Terhubung!',
+        logged_out: '🚪 Sesi telah dihapus dan koneksi dihentikan.',
+        loading: 'Loading bos...',
+        group_created: '✅ Grup Berhasil Dibuat: ',
+        group_fail: '❌ Gagal membuat grup: ',
+        setting_menu: 'Pengaturan Grup Baru:',
+        lang_changed: 'Bahasa diubah ke Bahasa Indonesia.',
+        invalid_link: 'Link tidak valid atau bot gagal bergabung.',
+        join_success: '✅ Berhasil bergabung ke grup!',
+        export_format: (name, link, date) => `Nama Grup: ${name}\nLink Grup: ${link}\nTahun Pembuatan: ${date}`
+    },
+    EN: {
+        welcome: 'Welcome to WA-TG Bot Orchestrator. Please login to start.',
+        choose_method: 'Choose Login Method:',
+        enter_number: 'Enter your WhatsApp number (format: 628xxx):',
+        pairing_code_msg: 'Your Pairing Code is: ',
+        qr_scan: 'Scan this QR Code using your WhatsApp:',
+        logged_in: '✅ WhatsApp Connected!',
+        logged_out: '🚪 Session deleted and connection stopped.',
+        loading: 'Loading sir...',
+        group_created: '✅ Group Created Successfully: ',
+        group_fail: '❌ Failed to create group: ',
+        setting_menu: 'New Group Settings:',
+        lang_changed: 'Language changed to English.',
+        invalid_link: 'Invalid link or bot failed to join.',
+        join_success: '✅ Successfully joined the group!',
+        export_format: (name, link, date) => `Group Name: ${name}\nGroup Link: ${link}\nCreation Date: ${date}`
+    }
+};
 
-// --- Inisialisasi Bot Telegram ---
+// --- Config & State ---
+const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
 const bot = new Telegraf(TG_BOT_TOKEN);
-let sock = null;
-let qrBuffer = null;
-let pairingCode = null;
+const sockets = new Map(); // Store sockets by chatId
+const userPrefs = new Map(); // { lang: 'ID', settings: {} }
+const userState = new Map(); // Track steps in conversation
 
-// Helper function untuk delay
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+// Helper for translation
+const t = (ctx, key, ...args) => {
+    const lang = userPrefs.get(ctx.chat.id)?.lang || 'ID';
+    const val = strings[lang][key];
+    return typeof val === 'function' ? val(...args) : val;
+};
 
-async function startWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+// --- WhatsApp Logic ---
+async function startWA(chatId, phoneNumber = null) {
+    const sessionDir = path.join(__dirname, 'sessions', `session-${chatId}`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { version } = await fetchLatestBaileysVersion();
 
-    sock = makeWASocket({
+    const sock = makeWASocket({
         version,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false, // Kita kirim ke Telegram
         auth: state,
-        browser: ["Ubuntu", "Chrome", "20.0.04"]
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
+        printQRInTerminal: false
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    sockets.set(chatId, sock);
 
+    sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         
-        if (qr) {
-            qrBuffer = await qrcode.toBuffer(qr);
+        if (qr && !phoneNumber) {
+            // Store QR for display if needed
+            sock.currentQR = qr;
         }
 
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Koneksi terputus karena ', lastDisconnect.error, ', mencoba menghubungkan kembali: ', shouldReconnect);
-            if (shouldReconnect) startWhatsApp();
+            const code = (lastDisconnect.error instanceof Boom)?.output?.statusCode;
+            if (code !== DisconnectReason.loggedOut) {
+                startWA(chatId);
+            } else {
+                sockets.delete(chatId);
+            }
         } else if (connection === 'open') {
-            console.log('WhatsApp Terhubung!');
+            bot.telegram.sendMessage(chatId, strings[userPrefs.get(chatId)?.lang || 'ID'].logged_in);
         }
     });
+
+    if (phoneNumber) {
+        await delay(3000);
+        const code = await sock.requestPairingCode(phoneNumber.replace(/[^0-9]/g, ''));
+        return code;
+    }
 
     return sock;
 }
 
-// Menu Utama (Inline Keyboard)
-const mainMenu = Markup.inlineKeyboard([
-    [Markup.button.callback('🔐 Masuk', 'login_choice'), Markup.button.callback('🚪 Keluar', 'logout')],
-    [Markup.button.callback('👥 Buat Grup', 'create_group'), Markup.button.callback('🔗 Ambil Link', 'get_link')],
-    [Markup.button.callback('➕ Masuk Grup', 'join_group'), Markup.button.callback('↩️ Keluar Grup', 'leave_group')],
-    [Markup.button.callback('🌐 Bahasa', 'change_lang')]
-]);
+// --- Menu UI ---
+const getMainMenu = (chatId) => {
+    const lang = userPrefs.get(chatId)?.lang || 'ID';
+    return Markup.inlineKeyboard([
+        [Markup.button.callback('🔐 Login', 'login_menu'), Markup.button.callback('🚪 Logout', 'logout')],
+        [Markup.button.callback('👥 Create Group', 'setup_group'), Markup.button.callback('🔗 Export Links', 'get_links')],
+        [Markup.button.callback('➕ Join Group', 'join_mode'), Markup.button.callback('🌐 Language', 'lang_toggle')]
+    ]);
+};
 
+const getSettingsMenu = (chatId) => {
+    const prefs = userPrefs.get(chatId) || { settings: { ann: false, lock: false, approve: false } };
+    const s = prefs.settings;
+    return Markup.inlineKeyboard([
+        [Markup.button.callback(`Announce: ${s.ann ? 'ON' : 'OFF'}`, 'toggle_ann')],
+        [Markup.button.callback(`Lock Info: ${s.lock ? 'ON' : 'OFF'}`, 'toggle_lock')],
+        [Markup.button.callback(`Approval: ${s.approve ? 'ON' : 'OFF'}`, 'toggle_approve')],
+        [Markup.button.callback('🚀 EXECUTE CREATE', 'do_create'), Markup.button.callback('❌ Cancel', 'back_main')]
+    ]);
+};
+
+// --- Bot Handlers ---
 bot.start((ctx) => {
-    ctx.reply('Selamat datang di WA-TG Bot Management Panel.\n\nSilakan pilih menu di bawah ini:', mainMenu);
+    if (!userPrefs.has(ctx.chat.id)) userPrefs.set(ctx.chat.id, { lang: 'ID', settings: { ann: false, lock: false, approve: false } });
+    ctx.reply(t(ctx, 'welcome'), getMainMenu(ctx.chat.id));
 });
 
-// Logic Login
-bot.action('login_choice', (ctx) => {
-    ctx.editMessageText('Pilih Metode Login:', Markup.inlineKeyboard([
+bot.action('login_menu', (ctx) => {
+    ctx.editMessageText(t(ctx, 'choose_method'), Markup.inlineKeyboard([
         [Markup.button.callback('QR Code', 'login_qr'), Markup.button.callback('Pairing Code', 'login_pairing')],
-        [Markup.button.callback('⬅️ Kembali', 'back_to_main')]
+        [Markup.button.callback('⬅️ Back', 'back_main')]
     ]));
 });
 
 bot.action('login_qr', async (ctx) => {
-    if (!sock) await startWhatsApp();
-    if (qrBuffer) {
-        await ctx.replyWithPhoto({ source: qrBuffer }, { caption: 'Scan QR Code ini menggunakan WhatsApp Anda.' });
-    } else {
-        ctx.reply('Sedang menyiapkan QR... Tunggu sebentar dan klik lagi.');
+    const sock = await startWA(ctx.chat.id);
+    ctx.reply(t(ctx, 'loading'));
+    let attempts = 0;
+    const checkQR = setInterval(async () => {
+        attempts++;
+        if (sock.currentQR) {
+            const buf = await qrcode.toBuffer(sock.currentQR);
+            ctx.replyWithPhoto({ source: buf }, { caption: t(ctx, 'qr_scan') });
+            clearInterval(checkQR);
+        }
+        if (attempts > 10) clearInterval(checkQR);
+    }, 2000);
+});
+
+bot.action('login_pairing', (ctx) => {
+    userState.set(ctx.chat.id, 'awaiting_number');
+    ctx.reply(t(ctx, 'enter_number'));
+});
+
+bot.action('logout', async (ctx) => {
+    const sock = sockets.get(ctx.chat.id);
+    if (sock) {
+        try { await sock.logout(); } catch (e) {}
+        sockets.delete(ctx.chat.id);
     }
+    const sessionDir = path.join(__dirname, 'sessions', `session-${ctx.chat.id}`);
+    if (fs.existsSync(sessionDir)) fs.removeSync(sessionDir);
+    ctx.reply(t(ctx, 'logged_out'), getMainMenu(ctx.chat.id));
 });
 
-bot.action('login_pairing', async (ctx) => {
-    ctx.reply('Fitur Pairing Code memerlukan input nomor telepon. Silakan hubungi pengembang untuk aktivasi CLI.');
+bot.action('setup_group', (ctx) => {
+    ctx.editMessageText(t(ctx, 'setting_menu'), getSettingsMenu(ctx.chat.id));
 });
 
-// Logic Buat Grup
-let creationState = {};
+bot.action(/toggle_(.+)/, (ctx) => {
+    const type = ctx.match[1];
+    const prefs = userPrefs.get(ctx.chat.id);
+    if (type === 'ann') prefs.settings.ann = !prefs.settings.ann;
+    if (type === 'lock') prefs.settings.lock = !prefs.settings.lock;
+    if (type === 'approve') prefs.settings.approve = !prefs.settings.approve;
+    ctx.editMessageText(t(ctx, 'setting_menu'), getSettingsMenu(ctx.chat.id));
+});
 
-bot.action('create_group', (ctx) => {
-    creationState[ctx.from.id] = { step: 'name' };
-    ctx.reply('Ketik Nama Grup yang ingin dibuat:');
+bot.action('do_create', (ctx) => {
+    userState.set(ctx.chat.id, 'awaiting_group_name');
+    ctx.reply('Enter Group Name:');
+});
+
+bot.action('get_links', async (ctx) => {
+    const sock = sockets.get(ctx.chat.id);
+    if (!sock) return ctx.reply('Login first!');
+    ctx.reply(t(ctx, 'loading'));
+    try {
+        const groups = await sock.groupFetchAllParticipating();
+        for (const jid in groups) {
+            const g = groups[jid];
+            const code = await sock.groupInviteCode(jid);
+            const date = new Date(g.creation * 1000).toLocaleDateString('id-ID');
+            ctx.reply(t(ctx, 'export_format', g.subject, `https://chat.whatsapp.com/${code}`, date));
+            await delay(1000);
+        }
+    } catch (e) { ctx.reply('Error: ' + e.message); }
+});
+
+bot.action('lang_toggle', (ctx) => {
+    const prefs = userPrefs.get(ctx.chat.id);
+    prefs.lang = prefs.lang === 'ID' ? 'EN' : 'ID';
+    ctx.reply(t(ctx, 'lang_changed'), getMainMenu(ctx.chat.id));
 });
 
 bot.on('text', async (ctx) => {
-    const state = creationState[ctx.from.id];
-    if (!state) return;
+    const state = userState.get(ctx.chat.id);
+    const sock = sockets.get(ctx.chat.id);
 
-    if (state.step === 'name') {
-        state.name = ctx.message.text;
-        state.step = 'count';
-        ctx.reply(`Berapa banyak grup "${state.name}" yang ingin dibuat?`);
-    } else if (state.step === 'count') {
-        const count = parseInt(ctx.message.text);
-        if (isNaN(count)) return ctx.reply('Masukkan angka valid!');
-        
-        ctx.reply(`Memulai pembuatan ${count} grup. Harap tunggu...`);
-        
-        for (let i = 1; i <= count; i++) {
-            try {
-                const group = await sock.groupCreate(`${state.name} #${i}`, []);
-                ctx.reply(`✅ Berhasil membuat: ${state.name} #${i}`);
-                await sleep(5000); // Anti-ban delay
-            } catch (err) {
-                ctx.reply(`❌ Gagal membuat grup ke-${i}: ${err.message}`);
-            }
-        }
-        delete creationState[ctx.from.id];
-        ctx.reply('Proses selesai.', mainMenu);
+    if (state === 'awaiting_number') {
+        const num = ctx.message.text.trim();
+        ctx.reply(t(ctx, 'loading'));
+        const code = await startWA(ctx.chat.id, num);
+        ctx.reply(`${t(ctx, 'pairing_code_msg')} ` + `*${code}*`, { parse_mode: 'Markdown' });
+        userState.delete(ctx.chat.id);
+    } 
+    else if (state === 'awaiting_group_name') {
+        if (!sock) return ctx.reply('Not connected!');
+        try {
+            const name = ctx.message.text;
+            const group = await sock.groupCreate(name, []);
+            const settings = userPrefs.get(ctx.chat.id).settings;
+            
+            if (settings.ann) await sock.groupSettingUpdate(group.id, 'announcement');
+            if (settings.lock) await sock.groupSettingUpdate(group.id, 'locked');
+            if (settings.approve) await sock.groupUpdateSettings(group.id, 'membership_approval', 'on');
+            
+            ctx.reply(t(ctx, 'group_created') + name);
+        } catch (e) { ctx.reply(t(ctx, 'group_fail') + e.message); }
+        userState.delete(ctx.chat.id);
+    }
+    // Auto Join Listener
+    else if (ctx.message.text.includes('chat.whatsapp.com/')) {
+        if (!sock) return;
+        const code = ctx.message.text.split('chat.whatsapp.com/')[1].split(' ')[0];
+        try {
+            await sock.groupAcceptInvite(code);
+            ctx.reply(t(ctx, 'join_success'));
+        } catch (e) { ctx.reply(t(ctx, 'invalid_link')); }
     }
 });
 
-bot.action('get_link', async (ctx) => {
-    if (!sock) return ctx.reply('WhatsApp belum terhubung!');
-    try {
-        const groups = await sock.groupFetchAllParticipating();
-        const groupList = Object.values(groups);
-        if (groupList.length === 0) return ctx.reply('Tidak ada grup ditemukan.');
+bot.action('back_main', (ctx) => ctx.editMessageText(t(ctx, 'welcome'), getMainMenu(ctx.chat.id)));
 
-        ctx.reply('Mengambil link invite grup terbaru...');
-        for (const g of groupList.slice(-5)) { // Ambil 5 terakhir
-            const code = await sock.groupInviteCode(g.id);
-            ctx.reply(`📌 ${g.subject}: https://chat.whatsapp.com/${code}`);
-            await sleep(1000);
-        }
-    } catch (err) {
-        ctx.reply('Gagal mengambil link: ' + err.message);
-    }
-});
-
-bot.action('back_to_main', (ctx) => ctx.editMessageText('Menu Utama:', mainMenu));
-
-bot.launch().then(() => console.log('Bot Telegram Berjalan!'));
-
-// Enable graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+bot.launch().then(() => console.log('Telegram Bot Active'));
