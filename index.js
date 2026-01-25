@@ -11,87 +11,78 @@ const pino = require('pino');
 const { Boom } = require('@hapi/boom');
 const fs = require('fs-extra');
 const path = require('path');
+const QRCode = require('qrcode');
 
 /**
- * TRUE MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
- * Optimized for Railway.app (Low RAM usage)
+ * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
+ * Optimized for Dual Login (QR/Pairing) & Mass Group Creation
  */
 
-const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
+const TG_BOT_TOKEN = 'MASUKKAN_TOKEN_BOT_TELEGRAM_DISINI';
 const bot = new Telegraf(TG_BOT_TOKEN);
-const sockets = new Map(); // Store instances: chatId -> sock
+const sockets = new Map(); // chatId -> sock
 const DB_PATH = path.join(__dirname, 'db.json');
 
-// --- Database Helper ---
+// --- Persistent Database ---
 if (!fs.existsSync(DB_PATH)) fs.writeJsonSync(DB_PATH, { users: {} });
 const db = fs.readJsonSync(DB_PATH);
 const saveDb = () => fs.writeJsonSync(DB_PATH, db);
 
-// --- i18n Localization ---
+// --- Localization Support ---
 const strings = {
     ID: {
-        welcome: 'Selamat datang! Bot GC OWNER @XIXI8778.',
-        login_opt: 'Metode Login:',
-        input_num: 'Ketik nomor WA (contoh: 62812xxx):',
-        pairing_msg: (code) => `Kode Pairing Anda: *${code}*`,
-        connected: '✅ WhatsApp Terhubung!',
-        disconnected: '❌ Terputus. Silakan login kembali.',
-        logout_done: '🚪 Sesi dihapus. Koneksi dihentikan.',
+        welcome: 'Selamat datang! Kelola WhatsApp Anda via Telegram.',
+        login_menu: 'Silakan pilih metode masuk:',
+        input_num: 'Ketik nomor WA Anda (Contoh: 62812xxx):',
+        pairing_code: (code) => `Kode Pairing Anda: *${code}*`,
+        qr_msg: 'Scan QR Code ini untuk login:',
         loading: 'Loading bos...',
-        creating_groups: (name, count) => `Sedang membuat ${count} grup "${name}"... (Delay 15s)`,
-        create_done: (name, total) => `[${name}] Berhasil dibuat✅\nTotal: ${total}`,
-        join_start: 'Memulai proses join massal...',
-        join_fail: (name) => `❌ Gagal/Tidak bisa masuk ke: ${name}`,
-        join_done: 'DONE✅ Semua link diproses.',
-        export_header: 'Daftar Grup & Link Invite:\n\n',
-        export_item: (name, link, date) => `Nama: ${name}\nLink: ${link}\nTgl: ${date}\n\n`,
+        connected: '✅ WhatsApp Terhubung!',
+        disconnected: '❌ Koneksi terputus.',
+        logout_msg: 'Sesi telah dihapus dan logout berhasil.',
+        creating_single: (name) => `[${name}] Berhasil di Buat✅`,
+        create_summary: (total) => `Total: ${total} grup telah selesai dibuat`,
+        lang_switched: 'Bahasa diubah ke Bahasa Indonesia.',
         menu: {
             ann: 'Batas Pesan',
             lock: 'Kunci Info',
-            add: 'Tambah Anggota',
             approve: 'Persetujuan'
         }
     },
     EN: {
-        welcome: 'Welcome! Bot GC OWNER @XIXI8778.',
-        login_opt: 'Login Method:',
-        input_num: 'Enter WA Number (e.g., 62812xxx):',
-        pairing_msg: (code) => `Your Pairing Code: *${code}*`,
-        connected: '✅ WhatsApp Connected!',
-        disconnected: '❌ Disconnected. Please login again.',
-        logout_done: '🚪 Session deleted. Connection stopped.',
+        welcome: 'Welcome! Manage your WhatsApp via Telegram.',
+        login_menu: 'Please choose login method:',
+        input_num: 'Enter your WA Number (Example: 62812xxx):',
+        pairing_code: (code) => `Your Pairing Code: *${code}*`,
+        qr_msg: 'Scan this QR Code to login:',
         loading: 'Loading sir...',
-        creating_groups: (name, count) => `Creating ${count} groups named "${name}"... (15s delay)`,
-        create_done: (name, total) => `[${name}] Created successfully✅\nTotal: ${total}`,
-        join_start: 'Starting mass join process...',
-        join_fail: (name) => `❌ Failed/Cannot join: ${name}`,
-        join_done: 'DONE✅ All links processed.',
-        export_header: 'Group List & Invite Links:\n\n',
-        export_item: (name, link, date) => `Name: ${name}\nLink: ${link}\nDate: ${date}\n\n`,
+        connected: '✅ WhatsApp Connected!',
+        disconnected: '❌ Connection closed.',
+        logout_msg: 'Session deleted and logout successful.',
+        creating_single: (name) => `[${name}] Created Successfully✅`,
+        create_summary: (total) => `Total: ${total} groups have been created`,
+        lang_switched: 'Language switched to English.',
         menu: {
             ann: 'Restrict Msg',
             lock: 'Lock Info',
-            add: 'Add Member',
             approve: 'Approval'
         }
     }
 };
 
-const getT = (chatId) => {
-    const lang = db.users[chatId]?.lang || 'ID';
-    return strings[lang];
-};
+const getT = (chatId) => strings[db.users[chatId]?.lang || 'ID'];
 
 // --- WhatsApp Core Logic ---
-async function startWA(chatId, phoneNumber = null) {
-    const sessionPath = path.join(__dirname, 'sessions', `session-${chatId}`);
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+async function startWA(chatId, phoneNumber = null, isQRMode = false) {
+    const sessionDir = path.join(__dirname, 'sessions', `session-${chatId}`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         version,
-        logger: pino({ level: 'error' }), // RAM Efficient
+        logger: pino({ level: 'error' }),
         auth: state,
+        printQRInTerminal: false,
         browser: ["Ubuntu", "Chrome", "20.0.04"]
     });
 
@@ -99,16 +90,26 @@ async function startWA(chatId, phoneNumber = null) {
 
     sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-        
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr && isQRMode) {
+            try {
+                const buf = await QRCode.toBuffer(qr);
+                await bot.telegram.sendPhoto(chatId, { source: buf }, { caption: getT(chatId).qr_msg });
+            } catch (e) { console.error('QR Send Error:', e); }
+        }
+
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) startWA(chatId);
-            else {
+            const code = (lastDisconnect.error instanceof Boom)?.output?.statusCode;
+            if (code !== DisconnectReason.loggedOut) {
+                startWA(chatId);
+            } else {
                 sockets.delete(chatId);
-                bot.telegram.sendMessage(chatId, getT(chatId).disconnected);
+                db.users[chatId].isConnected = false;
+                saveDb();
             }
         } else if (connection === 'open') {
+            // ANTI-SPAM: Hanya kirim notifikasi jika sebelumnya belum terhubung
             if (!db.users[chatId].isConnected) {
                 bot.telegram.sendMessage(chatId, getT(chatId).connected);
                 db.users[chatId].isConnected = true;
@@ -125,47 +126,49 @@ async function startWA(chatId, phoneNumber = null) {
     return sock;
 }
 
-// --- Keyboard Helpers ---
-const mainKeyboard = (chatId) => {
-    const t = getT(chatId);
-    return Markup.inlineKeyboard([
-        [Markup.button.callback('🔐 Login', 'login_menu'), Markup.button.callback('🚪 Logout', 'logout')],
-        [Markup.button.callback('👥 Create Group', 'create_setting'), Markup.button.callback('🔗 Ambil Link', 'export_links')],
-        [Markup.button.callback('➕ Join Group', 'join_mode'), Markup.button.callback('🌐 Bahasa', 'toggle_lang')]
-    ]);
-};
+// --- Keyboards ---
+const mainKbd = (chatId) => Markup.inlineKeyboard([
+    [Markup.button.callback('🔐 Masuk', 'login_menu'), Markup.button.callback('🚪 Keluar', 'logout')],
+    [Markup.button.callback('👥 Buat Grup', 'create_settings'), Markup.button.callback('🔗 Ambil Link', 'get_links')],
+    [Markup.button.callback('🌐 Bahasa', 'switch_lang')]
+]);
 
-const settingKeyboard = (chatId) => {
-    const t = getT(chatId);
+const settingsKbd = (chatId) => {
     const s = db.users[chatId].settings;
+    const t = getT(chatId);
     return Markup.inlineKeyboard([
-        [Markup.button.callback(`${s.ann ? '✅' : '❌'} ${t.menu.ann}`, 'set_ann')],
-        [Markup.button.callback(`${s.lock ? '✅' : '❌'} ${t.menu.lock}`, 'set_lock')],
-        [Markup.button.callback(`${s.approve ? '✅' : '❌'} ${t.menu.approve}`, 'set_approve')],
-        [Markup.button.callback('🚀 EXECUTE CREATE', 'run_create')],
-        [Markup.button.callback('⬅️ Back', 'back_main')]
+        [Markup.button.callback(`${s.ann ? '✅' : '❌'} ${t.menu.ann}`, 'toggle_ann')],
+        [Markup.button.callback(`${s.lock ? '✅' : '❌'} ${t.menu.lock}`, 'toggle_lock')],
+        [Markup.button.callback(`${s.approve ? '✅' : '❌'} ${t.menu.approve}`, 'toggle_approve')],
+        [Markup.button.callback('🚀 EXECUTE CREATE', 'start_create_process')],
+        [Markup.button.callback('⬅️ Kembali', 'back_main')]
     ]);
 };
 
-// --- Bot Actions ---
+// --- Action Handlers ---
 bot.start((ctx) => {
     const chatId = ctx.chat.id;
     if (!db.users[chatId]) {
         db.users[chatId] = { lang: 'ID', isConnected: false, settings: { ann: false, lock: false, approve: false } };
         saveDb();
     }
-    ctx.reply(getT(chatId).welcome, mainKeyboard(chatId));
+    ctx.reply(getT(chatId).welcome, mainKbd(chatId));
 });
 
 bot.action('login_menu', (ctx) => {
-    ctx.editMessageText(getT(ctx.chat.id).login_opt, Markup.inlineKeyboard([
-        [Markup.button.callback('Pairing Code', 'pairing_flow')],
-        [Markup.button.callback('⬅️ Back', 'back_main')]
+    ctx.editMessageText(getT(ctx.chat.id).login_menu, Markup.inlineKeyboard([
+        [Markup.button.callback('📸 Scan QR', 'login_qr'), Markup.button.callback('🔢 Pairing Code', 'login_pairing')],
+        [Markup.button.callback('⬅️ Kembali', 'back_main')]
     ]));
 });
 
-bot.action('pairing_flow', (ctx) => {
-    db.users[ctx.chat.id].step = 'awaiting_num';
+bot.action('login_qr', async (ctx) => {
+    await startWA(ctx.chat.id, null, true);
+    ctx.reply(getT(ctx.chat.id).loading);
+});
+
+bot.action('login_pairing', (ctx) => {
+    db.users[ctx.chat.id].step = 'await_num';
     saveDb();
     ctx.reply(getT(ctx.chat.id).input_num);
 });
@@ -177,113 +180,88 @@ bot.action('logout', async (ctx) => {
         try { await sock.logout(); } catch (e) {}
         sockets.delete(chatId);
     }
-    const sessionPath = path.join(__dirname, 'sessions', `session-${chatId}`);
-    fs.rmSync(sessionPath, { recursive: true, force: true });
+    const sessionDir = path.join(__dirname, 'sessions', `session-${chatId}`);
+    fs.rmSync(sessionDir, { recursive: true, force: true });
     db.users[chatId].isConnected = false;
     saveDb();
-    ctx.reply(getT(chatId).logout_out);
+    ctx.reply(getT(chatId).logout_msg);
 });
 
-bot.action('create_setting', (ctx) => {
-    ctx.editMessageText('Group Configuration:', settingKeyboard(ctx.chat.id));
+bot.action('create_settings', (ctx) => {
+    ctx.editMessageText('Pengaturan Grup:', settingsKbd(ctx.chat.id));
 });
 
-bot.action(/set_(.+)/, (ctx) => {
+bot.action(/toggle_(.+)/, (ctx) => {
     const key = ctx.match[1];
     db.users[ctx.chat.id].settings[key] = !db.users[ctx.chat.id].settings[key];
     saveDb();
-    ctx.editMessageText('Group Configuration:', settingKeyboard(ctx.chat.id));
+    ctx.editMessageText('Pengaturan Grup:', settingsKbd(ctx.chat.id));
 });
 
-bot.action('run_create', (ctx) => {
-    db.users[ctx.chat.id].step = 'awaiting_name';
+bot.action('start_create_process', (ctx) => {
+    db.users[ctx.chat.id].step = 'await_name';
     saveDb();
-    ctx.reply('Masukkan Nama Grup:');
+    ctx.reply('Ketik Nama Grup:');
 });
 
-bot.action('export_links', async (ctx) => {
-    const chatId = ctx.chat.id;
-    const sock = sockets.get(chatId);
-    if (!sock) return ctx.reply('Login first!');
-    
-    ctx.reply(getT(chatId).loading);
-    try {
-        const groups = await sock.groupFetchAllParticipating();
-        let msg = getT(chatId).export_header;
-        for (const jid in groups) {
-            const g = groups[jid];
-            const code = await sock.groupInviteCode(jid);
-            const date = new Date(g.creation * 1000).toLocaleDateString('id-ID');
-            msg += getT(chatId).export_item(g.subject, `https://chat.whatsapp.com/${code}`, date);
-            if (msg.length > 3000) {
-                await ctx.reply(msg);
-                msg = '';
-            }
-        }
-        if (msg) ctx.reply(msg);
-    } catch (e) { ctx.reply('Error: ' + e.message); }
-});
-
-bot.action('toggle_lang', (ctx) => {
-    db.users[ctx.chat.id].lang = db.users[ctx.chat.id].lang === 'ID' ? 'EN' : 'ID';
+bot.action('switch_lang', (ctx) => {
+    const current = db.users[ctx.chat.id].lang;
+    db.users[ctx.chat.id].lang = current === 'ID' ? 'EN' : 'ID';
     saveDb();
-    ctx.reply('Language switched!', mainKeyboard(ctx.chat.id));
+    ctx.reply(getT(ctx.chat.id).lang_switched, mainKbd(ctx.chat.id));
 });
 
-bot.action('back_main', (ctx) => ctx.editMessageText(getT(ctx.chat.id).welcome, mainKeyboard(ctx.chat.id)));
+bot.action('back_main', (ctx) => ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id)));
 
-// --- Message Handlers ---
+// --- Logic ---
 bot.on('text', async (ctx) => {
     const chatId = ctx.chat.id;
     const user = db.users[chatId];
     const t = getT(chatId);
 
-    if (user.step === 'awaiting_num') {
+    if (user.step === 'await_num') {
         const num = ctx.message.text.trim();
         const code = await startWA(chatId, num);
-        ctx.reply(t.pairing_msg(code), { parse_mode: 'Markdown' });
+        ctx.reply(t.pairing_code(code), { parse_mode: 'Markdown' });
         user.step = null;
         saveDb();
-    } else if (user.step === 'awaiting_name') {
+    } else if (user.step === 'await_name') {
         user.tmpName = ctx.message.text;
-        user.step = 'awaiting_count';
+        user.step = 'await_count';
         saveDb();
         ctx.reply('Berapa jumlah grup? (Maks 30):');
-    } else if (user.step === 'awaiting_count') {
-        const count = Math.min(parseInt(ctx.message.text), 30);
+    } else if (user.step === 'await_count') {
+        const count = parseInt(ctx.message.text);
         const sock = sockets.get(chatId);
-        ctx.reply(t.creating_groups(user.tmpName, count));
+        if (!sock) return ctx.reply('WhatsApp belum login!');
+
+        ctx.reply(t.loading);
         
         for (let i = 1; i <= count; i++) {
             try {
-                const group = await sock.groupCreate(`${user.tmpName} #${i}`, []);
+                const groupName = `${user.tmpName} #${i}`;
+                const group = await sock.groupCreate(groupName, []);
                 const s = user.settings;
+                
+                // Terapkan pengaturan
                 if (s.ann) await sock.groupSettingUpdate(group.id, 'announcement');
                 if (s.lock) await sock.groupSettingUpdate(group.id, 'locked');
                 if (s.approve) await sock.groupUpdateSettings(group.id, 'membership_approval', 'on');
-                await delay(15000); // Anti-ban delay
-            } catch (e) { console.error(e); }
+
+                ctx.reply(t.creating_single(groupName));
+                
+                // Jeda 5 detik antar pembuatan
+                if (i < count) await new Promise(resolve => setTimeout(resolve, 5000));
+            } catch (e) {
+                ctx.reply(`Gagal membuat grup ${i}: ` + e.message);
+            }
         }
-        ctx.reply(t.create_done(user.tmpName, count));
+        
+        ctx.reply(t.create_summary(count));
         user.step = null;
         saveDb();
-    } 
-    // Join Mass Listener
-    else if (ctx.message.text.includes('chat.whatsapp.com/')) {
-        const sock = sockets.get(chatId);
-        if (!sock) return;
-        const links = ctx.message.text.match(/chat\.whatsapp\.com\/[a-zA-Z0-9]+/g);
-        ctx.reply(t.join_start);
-        for (const link of links) {
-            const code = link.split('/')[1];
-            try {
-                await sock.groupAcceptInvite(code);
-                await delay(10000);
-            } catch (e) { ctx.reply(t.join_fail(link)); }
-        }
-        ctx.reply(t.join_done);
     }
 });
 
-bot.launch().then(() => console.log('Bot Active on Railway'));
+bot.launch().then(() => console.log('Bot Active'));
         
