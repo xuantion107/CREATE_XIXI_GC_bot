@@ -1,18 +1,16 @@
 
 {
-  "name": "wa-tg-bot",
-  "version": "1.0.0",
-  "description": "WhatsApp Telegram Integration Bot",
+  "name": "wa-tg-orchestrator",
+  "version": "1.2.0",
+  "description": "Multi-Sender WhatsApp Telegram Integration",
   "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.0",
+    "@whiskeysockets/baileys": "^6.7.2",
     "telegraf": "^4.16.3",
     "pino": "^8.19.0",
     "@hapi/boom": "^10.0.1",
     "qrcode": "^1.5.3",
-    "fs-extra": "^11.2.0"
+    "fs-extra": "^11.2.0",
+    "path": "^0.12.7"
   }
 }
