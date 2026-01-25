@@ -4,7 +4,8 @@ const {
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
-    delay
+    delay,
+    Browsers
 } = require("@whiskeysockets/baileys");
 const { Telegraf, Markup } = require('telegraf');
 const pino = require('pino');
@@ -15,12 +16,12 @@ const QRCode = require('qrcode');
 
 /**
  * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
- * v2.9.0 - Enhanced Visual Language Selection & Confirmation
+ * v3.0.0 - Multi-User Fix & Robust Admin Link Extraction
  */
 
 const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
 const bot = new Telegraf(TG_BOT_TOKEN);
-const sockets = new Map(); // chatId -> sock
+const sockets = new Map(); // Map untuk menyimpan koneksi unik per chatId
 const DB_PATH = path.join(__dirname, 'db.json');
 
 // --- Persistent Database ---
@@ -43,7 +44,7 @@ const strings = {
         creating_single: (name) => `[${name}] Berhasil di Buat✅`,
         create_summary: (total, requested) => `Total: ${total}/${requested} grup telah selesai dibuat.`,
         lang_switched: 'Bahasa berhasil diubah ke Bahasa Indonesia 🇮🇩',
-        export_header: 'DAFTAR LINK GRUP\n\n',
+        export_header: 'DAFTAR LINK GRUP (HANYA ADMIN)\n\n',
         export_item: (name, link, date) => `Nama Group: ${name}\nLink grup: ${link}\nTanggal pembuatan: ${date}\n\n`,
         input_join: 'Kirim link grup WhatsApp (Satu per baris):',
         joining: (link) => `⏳ Mencoba gabung: ${link}`,
@@ -78,7 +79,7 @@ const strings = {
         creating_single: (name) => `[${name}] Created Successfully✅`,
         create_summary: (total, requested) => `Total: ${total}/${requested} groups have been created.`,
         lang_switched: 'Language successfully switched to English 🇬🇧',
-        export_header: 'GROUP LINK LIST\n\n',
+        export_header: 'GROUP LINK LIST (ADMIN ONLY)\n\n',
         export_item: (name, link, date) => `Group Name: ${name}\nGroup link: ${link}\nCreation date: ${date}\n\n`,
         input_join: 'Send WhatsApp group links (One per line):',
         joining: (link) => `⏳ Attempting to join: ${link}`,
@@ -104,44 +105,49 @@ const strings = {
 
 const getT = (chatId) => strings[db.users[chatId]?.lang || 'ID'];
 
-// --- WhatsApp Core Logic ---
+// --- WhatsApp Core Logic (Multi-Sender Enabled) ---
 async function startWA(chatId, phoneNumber = null, isQRMode = false) {
     const sessionDir = path.join(__dirname, 'sessions', `session-${chatId}`);
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
     const { version } = await fetchLatestBaileysVersion();
 
+    // Hapus koneksi lama jika ada sebelum membuat baru (Pencegahan Memory Leak)
+    if (sockets.has(chatId)) {
+        try { sockets.get(chatId).end(); } catch(e) {}
+    }
+
     const sock = makeWASocket({
         version,
-        logger: pino({ level: 'error' }),
+        logger: pino({ level: 'silent' }), // Silent agar terminal bersih
         auth: state,
         printQRInTerminal: false,
-        browser: ["Ubuntu", "Chrome", "20.0.04"]
+        browser: Browsers.ubuntu("Chrome")
     });
 
     sockets.set(chatId, sock);
 
     sock.ev.on('creds.update', saveCreds);
+    
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr && isQRMode) {
             try {
-                if (db.users[chatId] && db.users[chatId].lastQrId) {
+                if (db.users[chatId]?.lastQrId) {
                     try { await bot.telegram.deleteMessage(chatId, db.users[chatId].lastQrId); } catch (e) {}
                 }
                 const buf = await QRCode.toBuffer(qr);
                 const msg = await bot.telegram.sendPhoto(chatId, { source: buf }, { caption: getT(chatId).qr_msg });
-                
                 if (db.users[chatId]) {
                   db.users[chatId].lastQrId = msg.message_id;
                   saveDb();
                 }
-            } catch (e) { console.error('QR Send Error:', e); }
+            } catch (e) {}
         }
 
         if (connection === 'close') {
-            const code = (lastDisconnect.error instanceof Boom)?.output?.statusCode;
-            if (code !== DisconnectReason.loggedOut) {
+            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
                 startWA(chatId, null, false);
             } else {
                 sockets.delete(chatId);
@@ -152,14 +158,10 @@ async function startWA(chatId, phoneNumber = null, isQRMode = false) {
                 }
             }
         } else if (connection === 'open') {
-            if (db.users[chatId] && !db.users[chatId].isConnected) {
-                bot.telegram.sendMessage(chatId, getT(chatId).connected);
-                if (db.users[chatId].lastQrId) {
-                    try { await bot.telegram.deleteMessage(chatId, db.users[chatId].lastQrId); } catch (e) {}
-                    db.users[chatId].lastQrId = null;
-                }
+            if (db.users[chatId]) {
                 db.users[chatId].isConnected = true;
                 saveDb();
+                bot.telegram.sendMessage(chatId, getT(chatId).connected);
             }
         }
     });
@@ -187,18 +189,6 @@ const mainKbd = (chatId) => {
     ]);
 };
 
-const settingsKbd = (chatId) => {
-    const s = db.users[chatId].settings;
-    const t = getT(chatId);
-    return Markup.inlineKeyboard([
-        [Markup.button.callback(`${s.ann ? '✅' : '❌'} ${t.menu.ann}`, 'toggle_ann')],
-        [Markup.button.callback(`${s.lock ? '✅' : '❌'} ${t.menu.lock}`, 'toggle_lock')],
-        [Markup.button.callback(`${s.approve ? '✅' : '❌'} ${t.menu.approve}`, 'toggle_approve')],
-        [Markup.button.callback('🚀 EXECUTE CREATE', 'start_create_process')],
-        [Markup.button.callback(t.btn.back, 'back_main')]
-    ]);
-};
-
 // --- Action Handlers ---
 bot.start((ctx) => {
     const chatId = ctx.chat.id;
@@ -211,26 +201,15 @@ bot.start((ctx) => {
         };
         saveDb();
     }
-    
-    if (!db.users[chatId].lang) {
-        return ctx.reply('🌐 Pilih Bahasa / Select Language', langKbd());
-    }
-    
+    if (!db.users[chatId].lang) return ctx.reply('🌐 Pilih Bahasa / Select Language', langKbd());
     ctx.reply(getT(chatId).welcome, mainKbd(chatId));
 });
 
-bot.action('set_lang_id', async (ctx) => {
-    db.users[ctx.chat.id].lang = 'ID';
+bot.action(/set_lang_(id|en)/, async (ctx) => {
+    const lang = ctx.match[1].toUpperCase();
+    db.users[ctx.chat.id].lang = lang;
     saveDb();
-    const t = strings.ID;
-    await ctx.answerCbQuery(t.lang_switched);
-    ctx.editMessageText(t.welcome, mainKbd(ctx.chat.id));
-});
-
-bot.action('set_lang_en', async (ctx) => {
-    db.users[ctx.chat.id].lang = 'EN';
-    saveDb();
-    const t = strings.EN;
+    const t = strings[lang];
     await ctx.answerCbQuery(t.lang_switched);
     ctx.editMessageText(t.welcome, mainKbd(ctx.chat.id));
 });
@@ -244,13 +223,8 @@ bot.action('login_menu', (ctx) => {
 });
 
 bot.action('login_qr', async (ctx) => {
-    const chatId = ctx.chat.id;
-    if (db.users[chatId]) {
-        db.users[chatId].isConnected = false;
-        saveDb();
-    }
-    await startWA(chatId, null, true);
-    ctx.reply(getT(chatId).loading);
+    await startWA(ctx.chat.id, null, true);
+    ctx.reply(getT(ctx.chat.id).loading);
 });
 
 bot.action('login_pairing', (ctx) => {
@@ -276,61 +250,25 @@ bot.action('logout', async (ctx) => {
     ctx.reply(getT(chatId).logout_msg);
 });
 
-bot.action('create_settings', (ctx) => {
-    const t = getT(ctx.chat.id);
-    ctx.editMessageText('Pengaturan Grup:', settingsKbd(ctx.chat.id));
-});
-
-bot.action('join_menu', (ctx) => {
-    const chatId = ctx.chat.id;
-    db.users[chatId].step = 'await_join_links';
-    saveDb();
-    ctx.reply(getT(chatId).input_join);
-});
-
-bot.action(/toggle_(.+)/, (ctx) => {
-    const key = ctx.match[1];
-    db.users[ctx.chat.id].settings[key] = !db.users[ctx.chat.id].settings[key];
-    saveDb();
-    ctx.editMessageText('Pengaturan Grup:', settingsKbd(ctx.chat.id));
-});
-
-bot.action('start_create_process', (ctx) => {
-    db.users[ctx.chat.id].step = 'await_name';
-    saveDb();
-    ctx.reply('Ketik Nama Grup (Maks 21 karakter):');
-});
-
 bot.action('get_links', async (ctx) => {
     const chatId = ctx.chat.id;
     const sock = sockets.get(chatId);
     const t = getT(chatId);
 
-    if (!sock || !db.users[chatId].isConnected) {
-        return ctx.reply('WhatsApp belum login atau terhubung!');
-    }
-
+    if (!sock || !db.users[chatId].isConnected) return ctx.reply('❌ WhatsApp belum terhubung!');
     ctx.reply(t.loading);
 
     try {
         const groups = await sock.groupFetchAllParticipating();
-        const groupList = Object.values(groups).sort((a, b) => a.creation - b.creation);
-
         let fullMessage = t.export_header;
+        let count = 0;
         
-        for (const group of groupList) {
+        for (const [id, group] of Object.entries(groups)) {
             try {
-                const inviteCode = await sock.groupInviteCode(group.id);
+                // Mencoba mengambil link hanya jika bot/user adalah admin
+                const inviteCode = await sock.groupInviteCode(id);
                 const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
-                
-                const date = new Date(group.creation * 1000).toLocaleString('id-ID', {
-                    day: '2-digit', 
-                    month: '2-digit', 
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                });
-
+                const date = new Date(group.creation * 1000).toLocaleString('id-ID');
                 const item = t.export_item(group.subject, inviteLink, date);
                 
                 if ((fullMessage + item).length > 4000) {
@@ -339,28 +277,33 @@ bot.action('get_links', async (ctx) => {
                 } else {
                     fullMessage += item;
                 }
+                count++;
             } catch (err) {
-                console.error('Failed to get code for:', group.id, err.message);
+                // Lewati grup jika tidak memiliki hak akses (bukan admin)
+                continue;
             }
         }
 
-        if (fullMessage && fullMessage !== t.export_header) {
+        if (count > 0) {
             await ctx.reply(fullMessage);
-        } else if (fullMessage === t.export_header) {
-            await ctx.reply('Tidak ada grup ditemukan.');
+        } else {
+            await ctx.reply('Tidak ada grup di mana Anda menjadi Admin atau memiliki akses link.');
         }
     } catch (e) {
         ctx.reply('Gagal mengambil data grup: ' + e.message);
     }
 });
 
-bot.action('switch_lang', (ctx) => {
-    ctx.editMessageText('🌐 Pilih Bahasa / Select Language', langKbd());
+bot.action('join_menu', (ctx) => {
+    db.users[ctx.chat.id].step = 'await_join_links';
+    saveDb();
+    ctx.reply(getT(ctx.chat.id).input_join);
 });
 
 bot.action('back_main', (ctx) => ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id)));
+bot.action('switch_lang', (ctx) => ctx.editMessageText('🌐 Pilih Bahasa / Select Language', langKbd()));
 
-// --- Logic ---
+// --- Text Logic ---
 bot.on('text', async (ctx) => {
     const chatId = ctx.chat.id;
     const user = db.users[chatId];
@@ -373,55 +316,10 @@ bot.on('text', async (ctx) => {
         ctx.reply(t.pairing_code(code), { parse_mode: 'Markdown' });
         user.step = null;
         saveDb();
-    } else if (user.step === 'await_name') {
-        const inputName = ctx.message.text.trim();
-        if (inputName.length === 0 || inputName.length > 21) {
-            return ctx.reply('⚠️ Nama grup tidak valid atau terlalu panjang (Maks 21 karakter agar penomoran muat).');
-        }
-        user.tmpName = inputName;
-        user.step = 'await_count';
-        saveDb();
-        ctx.reply('Berapa jumlah grup? (Maks 30):');
-    } else if (user.step === 'await_count') {
-        const count = parseInt(ctx.message.text);
-        if (isNaN(count) || count <= 0 || count > 30) return ctx.reply('⚠️ Masukkan angka yang valid (1-30)!');
-        
-        const sock = sockets.get(chatId);
-        if (!sock || !user.isConnected) return ctx.reply('❌ WhatsApp belum login atau terhubung!');
-
-        ctx.reply(t.loading);
-        let successCount = 0;
-        
-        for (let i = 1; i <= count; i++) {
-            const groupName = `${user.tmpName} #${i}`;
-            try {
-                const group = await sock.groupCreate(groupName, []);
-                const s = user.settings;
-                
-                try {
-                    if (s.ann) await sock.groupSettingUpdate(group.id, 'announcement');
-                    if (s.lock) await sock.groupSettingUpdate(group.id, 'locked');
-                    if (s.approve) await sock.groupUpdateSettings(group.id, 'membership_approval', 'on');
-                } catch (settErr) {
-                    console.error('Group Settings Error:', groupName, settErr.message);
-                }
-
-                ctx.reply(t.creating_single(groupName));
-                successCount++;
-                
-                if (i < count) await new Promise(resolve => setTimeout(resolve, 5000));
-            } catch (e) {
-                console.error('Group Creation Error:', groupName, e.message);
-                ctx.reply(`⚠️ Gagal membuat grup "${groupName}": ` + e.message);
-            }
-        }
-        
-        ctx.reply(t.create_summary(successCount, count));
-        user.step = null;
-        saveDb();
     } else if (user.step === 'await_join_links') {
-        const links = ctx.message.text.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'));
-        if (links.length === 0) return ctx.reply('⚠️ Tidak ada link WhatsApp yang valid ditemukan.');
+        // Regex yang lebih kuat untuk menangkap link
+        const links = ctx.message.text.match(/chat\.whatsapp\.com\/[\w-]+/g);
+        if (!links) return ctx.reply('⚠️ Tidak ada link WhatsApp yang valid!');
 
         const sock = sockets.get(chatId);
         if (!sock || !user.isConnected) return ctx.reply('❌ WhatsApp belum login!');
@@ -429,33 +327,21 @@ bot.on('text', async (ctx) => {
         ctx.reply(t.loading);
 
         for (const link of links) {
-            const code = link.split('chat.whatsapp.com/')[1]?.split(' ')[0];
-            if (!code) continue;
-
+            const code = link.split('/')[1];
             try {
-                let groupName = link;
-                try {
-                    const info = await sock.groupGetInviteInfo(code);
-                    groupName = info.subject;
-                } catch (e) {}
-
+                const info = await sock.groupGetInviteInfo(code);
                 await sock.groupAcceptInvite(code);
-                ctx.reply(t.join_success(groupName));
+                ctx.reply(t.join_success(info.subject || code));
             } catch (err) {
-                console.error('Join Error:', link, err.message);
                 ctx.reply(t.join_fail(link));
             }
-
-            if (links.indexOf(link) < links.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 10000));
-            }
+            await delay(10000); // Anti-Ban Delay
         }
-
         ctx.reply(t.done);
         user.step = null;
         saveDb();
     }
 });
 
-bot.launch().then(() => console.log('Bot Active'));
-                                      
+bot.launch().then(() => console.log('Bot v3.0 Active - Multi-Sender Ready'));
+        
