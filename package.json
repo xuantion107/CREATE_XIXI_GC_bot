@@ -1,8 +1,7 @@
-
 {
   "name": "wa-tg-orchestrator",
-  "version": "2.1.0",
-  "description": "Multi-Sender WA-TG Bot with QR & Pairing Support",
+  "version": "2.2.0",
+  "description": "Multi-Sender WA-TG Bot with Sorted Export Feature",
   "main": "index.js",
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.2",
