@@ -1,8 +1,8 @@
 
 {
-  "name": "wa-tg-bot-railway",
-  "version": "2.0.0",
-  "description": "True Multi-Sender WA-TG Bot for Railway.app",
+  "name": "wa-tg-orchestrator",
+  "version": "2.1.0",
+  "description": "Multi-Sender WA-TG Bot with QR & Pairing Support",
   "main": "index.js",
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.2",
@@ -10,6 +10,7 @@
     "pino": "^8.19.0",
     "@hapi/boom": "^10.0.1",
     "fs-extra": "^11.2.0",
-    "path": "^0.12.7"
+    "path": "^0.12.7",
+    "qrcode": "^1.5.3"
   }
 }
