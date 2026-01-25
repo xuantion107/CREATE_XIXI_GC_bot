@@ -15,7 +15,7 @@ const QRCode = require('qrcode');
 
 /**
  * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
- * Robust Error Handling & Customized Link Export
+ * Robust Error Handling, Link Export & Mass Join Feature
  */
 
 const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
@@ -31,7 +31,7 @@ const saveDb = () => fs.writeJsonSync(DB_PATH, db);
 // --- Localization Support ---
 const strings = {
     ID: {
-        welcome: 'Selamat datang! OWNER .',
+        welcome: 'Selamat datang! Kelola WhatsApp Anda via Telegram.',
         login_menu: 'Silakan pilih metode masuk:',
         input_num: 'Ketik nomor WA Anda (Contoh: 62812xxx):',
         pairing_code: (code) => `Kode Pairing Anda: *${code}*`,
@@ -44,7 +44,12 @@ const strings = {
         create_summary: (total, requested) => `Total: ${total}/${requested} grup telah selesai dibuat.`,
         lang_switched: 'Bahasa diubah ke Bahasa Indonesia.',
         export_header: 'DAFTAR LINK GRUP\n\n',
-        export_item: (name, link, year) => `(${name})\nLink: ${link}\nTahun Pembuatan : ${year}\n\n`,
+        export_item: (name, link, date) => `Nama Group: ${name}\nLink grup: ${link}\nTanggal pembuatan: ${date}\n\n`,
+        input_join: 'Kirim link grup WhatsApp (Satu per baris):',
+        joining: (link) => `⏳ Mencoba gabung: ${link}`,
+        join_fail: (nameOrLink) => `❌ Cannot join [${nameOrLink}]`,
+        join_success: (name) => `✅ Berhasil masuk: ${name}`,
+        done: 'DONE✅',
         menu: {
             ann: 'Batas Pesan',
             lock: 'Kunci Info',
@@ -65,7 +70,12 @@ const strings = {
         create_summary: (total, requested) => `Total: ${total}/${requested} groups have been created.`,
         lang_switched: 'Language switched to English.',
         export_header: 'GROUP LINK LIST\n\n',
-        export_item: (name, link, year) => `(${name})\nLink: ${link}\nCreation Year : ${year}\n\n`,
+        export_item: (name, link, date) => `Group Name: ${name}\nGroup link: ${link}\nCreation date: ${date}\n\n`,
+        input_join: 'Send WhatsApp group links (One per line):',
+        joining: (link) => `⏳ Attempting to join: ${link}`,
+        join_fail: (nameOrLink) => `❌ Cannot join [${nameOrLink}]`,
+        join_success: (name) => `✅ Successfully joined: ${name}`,
+        done: 'DONE✅',
         menu: {
             ann: 'Restrict Msg',
             lock: 'Lock Info',
@@ -148,7 +158,7 @@ async function startWA(chatId, phoneNumber = null, isQRMode = false) {
 const mainKbd = (chatId) => Markup.inlineKeyboard([
     [Markup.button.callback('🔐 Masuk', 'login_menu'), Markup.button.callback('🚪 Keluar', 'logout')],
     [Markup.button.callback('👥 Buat Grup', 'create_settings'), Markup.button.callback('🔗 Ambil Link', 'get_links')],
-    [Markup.button.callback('🌐 Bahasa', 'switch_lang')]
+    [Markup.button.callback('📥 Gabung Grup', 'join_menu'), Markup.button.callback('🌐 Bahasa', 'switch_lang')]
 ]);
 
 const settingsKbd = (chatId) => {
@@ -222,6 +232,13 @@ bot.action('create_settings', (ctx) => {
     ctx.editMessageText('Pengaturan Grup:', settingsKbd(ctx.chat.id));
 });
 
+bot.action('join_menu', (ctx) => {
+    const chatId = ctx.chat.id;
+    db.users[chatId].step = 'await_join_links';
+    saveDb();
+    ctx.reply(getT(chatId).input_join);
+});
+
 bot.action(/toggle_(.+)/, (ctx) => {
     const key = ctx.match[1];
     db.users[ctx.chat.id].settings[key] = !db.users[ctx.chat.id].settings[key];
@@ -248,7 +265,6 @@ bot.action('get_links', async (ctx) => {
 
     try {
         const groups = await sock.groupFetchAllParticipating();
-        // Convert to array and sort by creation date (oldest first)
         const groupList = Object.values(groups).sort((a, b) => a.creation - b.creation);
 
         let fullMessage = t.export_header;
@@ -257,12 +273,18 @@ bot.action('get_links', async (ctx) => {
             try {
                 const inviteCode = await sock.groupInviteCode(group.id);
                 const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
-                // Extract only Year from the creation timestamp
-                const year = new Date(group.creation * 1000).getFullYear();
-
-                const item = t.export_item(group.subject, inviteLink, year);
                 
-                // Check Telegram message limit (4096)
+                // Format tanggal lengkap: DD/MM/YYYY HH:mm
+                const date = new Date(group.creation * 1000).toLocaleString('id-ID', {
+                    day: '2-digit', 
+                    month: '2-digit', 
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+
+                const item = t.export_item(group.subject, inviteLink, date);
+                
                 if ((fullMessage + item).length > 4000) {
                     await ctx.reply(fullMessage);
                     fullMessage = item;
@@ -350,6 +372,41 @@ bot.on('text', async (ctx) => {
         }
         
         ctx.reply(t.create_summary(successCount, count));
+        user.step = null;
+        saveDb();
+    } else if (user.step === 'await_join_links') {
+        const links = ctx.message.text.split(/\s+/).filter(l => l.includes('chat.whatsapp.com'));
+        if (links.length === 0) return ctx.reply('⚠️ Tidak ada link WhatsApp yang valid ditemukan.');
+
+        const sock = sockets.get(chatId);
+        if (!sock || !user.isConnected) return ctx.reply('❌ WhatsApp belum login!');
+
+        ctx.reply(t.loading);
+
+        for (const link of links) {
+            const code = link.split('chat.whatsapp.com/')[1]?.split(' ')[0];
+            if (!code) continue;
+
+            try {
+                let groupName = link;
+                try {
+                    const info = await sock.groupGetInviteInfo(code);
+                    groupName = info.subject;
+                } catch (e) {}
+
+                await sock.groupAcceptInvite(code);
+                ctx.reply(t.join_success(groupName));
+            } catch (err) {
+                console.error('Join Error:', link, err.message);
+                ctx.reply(t.join_fail(link));
+            }
+
+            if (links.indexOf(link) < links.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 10000));
+            }
+        }
+
+        ctx.reply(t.done);
         user.step = null;
         saveDb();
     }
