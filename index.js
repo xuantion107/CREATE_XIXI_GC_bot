@@ -43,6 +43,8 @@ const strings = {
         creating_single: (name) => `[${name}] Berhasil di Buat✅`,
         create_summary: (total) => `Total: ${total} grup telah selesai dibuat`,
         lang_switched: 'Bahasa diubah ke Bahasa Indonesia.',
+        export_header: '📦 *DAFTAR LINK GRUP* (Urut Tgl Create)\n\n',
+        export_item: (name, link, date) => `📌 *Nama:* ${name}\n🔗 *Link:* ${link}\n📅 *Dibuat:* ${date}\n\n`,
         menu: {
             ann: 'Batas Pesan',
             lock: 'Kunci Info',
@@ -62,6 +64,8 @@ const strings = {
         creating_single: (name) => `[${name}] Created Successfully✅`,
         create_summary: (total) => `Total: ${total} groups have been created`,
         lang_switched: 'Language switched to English.',
+        export_header: '📦 *GROUP LINK LIST* (Sorted by Creation)\n\n',
+        export_item: (name, link, date) => `📌 *Name:* ${name}\n🔗 *Link:* ${link}\n📅 *Created:* ${date}\n\n`,
         menu: {
             ann: 'Restrict Msg',
             lock: 'Lock Info',
@@ -105,11 +109,12 @@ async function startWA(chatId, phoneNumber = null, isQRMode = false) {
                 startWA(chatId);
             } else {
                 sockets.delete(chatId);
-                db.users[chatId].isConnected = false;
-                saveDb();
+                if(db.users[chatId]) {
+                    db.users[chatId].isConnected = false;
+                    saveDb();
+                }
             }
         } else if (connection === 'open') {
-            // ANTI-SPAM: Hanya kirim notifikasi jika sebelumnya belum terhubung
             if (!db.users[chatId].isConnected) {
                 bot.telegram.sendMessage(chatId, getT(chatId).connected);
                 db.users[chatId].isConnected = true;
@@ -182,8 +187,10 @@ bot.action('logout', async (ctx) => {
     }
     const sessionDir = path.join(__dirname, 'sessions', `session-${chatId}`);
     fs.rmSync(sessionDir, { recursive: true, force: true });
-    db.users[chatId].isConnected = false;
-    saveDb();
+    if(db.users[chatId]) {
+        db.users[chatId].isConnected = false;
+        saveDb();
+    }
     ctx.reply(getT(chatId).logout_msg);
 });
 
@@ -204,6 +211,55 @@ bot.action('start_create_process', (ctx) => {
     ctx.reply('Ketik Nama Grup:');
 });
 
+bot.action('get_links', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const sock = sockets.get(chatId);
+    const t = getT(chatId);
+
+    if (!sock || !db.users[chatId].isConnected) {
+        return ctx.reply('WhatsApp belum login atau terhubung!');
+    }
+
+    ctx.reply(t.loading);
+
+    try {
+        const groups = await sock.groupFetchAllParticipating();
+        // Convert to array and sort by creation date (oldest first)
+        const groupList = Object.values(groups).sort((a, b) => a.creation - b.creation);
+
+        let fullMessage = t.export_header;
+        
+        for (const group of groupList) {
+            try {
+                const inviteCode = await sock.groupInviteCode(group.id);
+                const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
+                const creationDate = new Date(group.creation * 1000).toLocaleString('id-ID', {
+                    day: '2-digit', month: '2-digit', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                });
+
+                const item = t.export_item(group.subject, inviteLink, creationDate);
+                
+                // Check Telegram message limit (4096)
+                if ((fullMessage + item).length > 4000) {
+                    await ctx.reply(fullMessage, { parse_mode: 'Markdown' });
+                    fullMessage = item;
+                } else {
+                    fullMessage += item;
+                }
+            } catch (err) {
+                console.error('Failed to get code for:', group.id, err.message);
+            }
+        }
+
+        if (fullMessage) {
+            await ctx.reply(fullMessage, { parse_mode: 'Markdown' });
+        }
+    } catch (e) {
+        ctx.reply('Gagal mengambil data grup: ' + e.message);
+    }
+});
+
 bot.action('switch_lang', (ctx) => {
     const current = db.users[ctx.chat.id].lang;
     db.users[ctx.chat.id].lang = current === 'ID' ? 'EN' : 'ID';
@@ -217,6 +273,7 @@ bot.action('back_main', (ctx) => ctx.editMessageText(getT(ctx.chat.id).welcome, 
 bot.on('text', async (ctx) => {
     const chatId = ctx.chat.id;
     const user = db.users[chatId];
+    if(!user) return;
     const t = getT(chatId);
 
     if (user.step === 'await_num') {
@@ -232,6 +289,8 @@ bot.on('text', async (ctx) => {
         ctx.reply('Berapa jumlah grup? (Maks 30):');
     } else if (user.step === 'await_count') {
         const count = parseInt(ctx.message.text);
+        if (isNaN(count)) return ctx.reply('Masukkan angka yang valid!');
+        
         const sock = sockets.get(chatId);
         if (!sock) return ctx.reply('WhatsApp belum login!');
 
@@ -264,4 +323,3 @@ bot.on('text', async (ctx) => {
 });
 
 bot.launch().then(() => console.log('Bot Active'));
-        
