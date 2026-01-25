@@ -1,7 +1,8 @@
+
 {
   "name": "wa-tg-orchestrator",
-  "version": "2.2.0",
-  "description": "Multi-Sender WA-TG Bot with Sorted Export Feature",
+  "version": "2.4.0",
+  "description": "Multi-Sender WA-TG Bot with Robust Error Handling",
   "main": "index.js",
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.2",
