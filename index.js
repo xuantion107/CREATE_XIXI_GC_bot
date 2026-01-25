@@ -15,7 +15,7 @@ const QRCode = require('qrcode');
 
 /**
  * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
- * Optimized for Dual Login (QR/Pairing) & Mass Group Creation
+ * Robust Error Handling & Anti-Spam Logic
  */
 
 const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
@@ -41,7 +41,7 @@ const strings = {
         disconnected: '❌ Koneksi terputus.',
         logout_msg: 'Sesi telah dihapus dan logout berhasil.',
         creating_single: (name) => `[${name}] Berhasil di Buat✅`,
-        create_summary: (total) => `Total: ${total} grup telah selesai dibuat`,
+        create_summary: (total, requested) => `Total: ${total}/${requested} grup telah selesai dibuat.`,
         lang_switched: 'Bahasa diubah ke Bahasa Indonesia.',
         export_header: '📦 *DAFTAR LINK GRUP* (Urut Tgl Create)\n\n',
         export_item: (name, link, date) => `📌 *Nama:* ${name}\n🔗 *Link:* ${link}\n📅 *Dibuat:* ${date}\n\n`,
@@ -62,7 +62,7 @@ const strings = {
         disconnected: '❌ Connection closed.',
         logout_msg: 'Session deleted and logout successful.',
         creating_single: (name) => `[${name}] Created Successfully✅`,
-        create_summary: (total) => `Total: ${total} groups have been created`,
+        create_summary: (total, requested) => `Total: ${total}/${requested} groups have been created.`,
         lang_switched: 'Language switched to English.',
         export_header: '📦 *GROUP LINK LIST* (Sorted by Creation)\n\n',
         export_item: (name, link, date) => `📌 *Name:* ${name}\n🔗 *Link:* ${link}\n📅 *Created:* ${date}\n\n`,
@@ -98,25 +98,38 @@ async function startWA(chatId, phoneNumber = null, isQRMode = false) {
 
         if (qr && isQRMode) {
             try {
+                if (db.users[chatId] && db.users[chatId].lastQrId) {
+                    try { await bot.telegram.deleteMessage(chatId, db.users[chatId].lastQrId); } catch (e) {}
+                }
                 const buf = await QRCode.toBuffer(qr);
-                await bot.telegram.sendPhoto(chatId, { source: buf }, { caption: getT(chatId).qr_msg });
+                const msg = await bot.telegram.sendPhoto(chatId, { source: buf }, { caption: getT(chatId).qr_msg });
+                
+                if (db.users[chatId]) {
+                  db.users[chatId].lastQrId = msg.message_id;
+                  saveDb();
+                }
             } catch (e) { console.error('QR Send Error:', e); }
         }
 
         if (connection === 'close') {
             const code = (lastDisconnect.error instanceof Boom)?.output?.statusCode;
             if (code !== DisconnectReason.loggedOut) {
-                startWA(chatId);
+                startWA(chatId, null, false);
             } else {
                 sockets.delete(chatId);
                 if(db.users[chatId]) {
                     db.users[chatId].isConnected = false;
+                    db.users[chatId].lastQrId = null;
                     saveDb();
                 }
             }
         } else if (connection === 'open') {
-            if (!db.users[chatId].isConnected) {
+            if (db.users[chatId] && !db.users[chatId].isConnected) {
                 bot.telegram.sendMessage(chatId, getT(chatId).connected);
+                if (db.users[chatId].lastQrId) {
+                    try { await bot.telegram.deleteMessage(chatId, db.users[chatId].lastQrId); } catch (e) {}
+                    db.users[chatId].lastQrId = null;
+                }
                 db.users[chatId].isConnected = true;
                 saveDb();
             }
@@ -154,7 +167,12 @@ const settingsKbd = (chatId) => {
 bot.start((ctx) => {
     const chatId = ctx.chat.id;
     if (!db.users[chatId]) {
-        db.users[chatId] = { lang: 'ID', isConnected: false, settings: { ann: false, lock: false, approve: false } };
+        db.users[chatId] = { 
+            lang: 'ID', 
+            isConnected: false, 
+            lastQrId: null,
+            settings: { ann: false, lock: false, approve: false } 
+        };
         saveDb();
     }
     ctx.reply(getT(chatId).welcome, mainKbd(chatId));
@@ -168,8 +186,13 @@ bot.action('login_menu', (ctx) => {
 });
 
 bot.action('login_qr', async (ctx) => {
-    await startWA(ctx.chat.id, null, true);
-    ctx.reply(getT(ctx.chat.id).loading);
+    const chatId = ctx.chat.id;
+    if (db.users[chatId]) {
+        db.users[chatId].isConnected = false;
+        saveDb();
+    }
+    await startWA(chatId, null, true);
+    ctx.reply(getT(chatId).loading);
 });
 
 bot.action('login_pairing', (ctx) => {
@@ -189,6 +212,7 @@ bot.action('logout', async (ctx) => {
     fs.rmSync(sessionDir, { recursive: true, force: true });
     if(db.users[chatId]) {
         db.users[chatId].isConnected = false;
+        db.users[chatId].lastQrId = null;
         saveDb();
     }
     ctx.reply(getT(chatId).logout_msg);
@@ -208,7 +232,7 @@ bot.action(/toggle_(.+)/, (ctx) => {
 bot.action('start_create_process', (ctx) => {
     db.users[ctx.chat.id].step = 'await_name';
     saveDb();
-    ctx.reply('Ketik Nama Grup:');
+    ctx.reply('Ketik Nama Grup (Maks 21 karakter):');
 });
 
 bot.action('get_links', async (ctx) => {
@@ -224,7 +248,6 @@ bot.action('get_links', async (ctx) => {
 
     try {
         const groups = await sock.groupFetchAllParticipating();
-        // Convert to array and sort by creation date (oldest first)
         const groupList = Object.values(groups).sort((a, b) => a.creation - b.creation);
 
         let fullMessage = t.export_header;
@@ -240,7 +263,6 @@ bot.action('get_links', async (ctx) => {
 
                 const item = t.export_item(group.subject, inviteLink, creationDate);
                 
-                // Check Telegram message limit (4096)
                 if ((fullMessage + item).length > 4000) {
                     await ctx.reply(fullMessage, { parse_mode: 'Markdown' });
                     fullMessage = item;
@@ -283,43 +305,57 @@ bot.on('text', async (ctx) => {
         user.step = null;
         saveDb();
     } else if (user.step === 'await_name') {
-        user.tmpName = ctx.message.text;
+        const inputName = ctx.message.text.trim();
+        // WhatsApp group name max 25. We append " #XX", so max base name is 21.
+        if (inputName.length === 0 || inputName.length > 21) {
+            return ctx.reply('⚠️ Nama grup tidak valid atau terlalu panjang (Maks 21 karakter agar penomoran muat).');
+        }
+        user.tmpName = inputName;
         user.step = 'await_count';
         saveDb();
         ctx.reply('Berapa jumlah grup? (Maks 30):');
     } else if (user.step === 'await_count') {
         const count = parseInt(ctx.message.text);
-        if (isNaN(count)) return ctx.reply('Masukkan angka yang valid!');
+        if (isNaN(count) || count <= 0 || count > 30) return ctx.reply('⚠️ Masukkan angka yang valid (1-30)!');
         
         const sock = sockets.get(chatId);
-        if (!sock) return ctx.reply('WhatsApp belum login!');
+        if (!sock || !user.isConnected) return ctx.reply('❌ WhatsApp belum login atau terhubung!');
 
         ctx.reply(t.loading);
+        let successCount = 0;
         
         for (let i = 1; i <= count; i++) {
+            const groupName = `${user.tmpName} #${i}`;
             try {
-                const groupName = `${user.tmpName} #${i}`;
+                // Robust Group Creation
                 const group = await sock.groupCreate(groupName, []);
                 const s = user.settings;
                 
-                // Terapkan pengaturan
-                if (s.ann) await sock.groupSettingUpdate(group.id, 'announcement');
-                if (s.lock) await sock.groupSettingUpdate(group.id, 'locked');
-                if (s.approve) await sock.groupUpdateSettings(group.id, 'membership_approval', 'on');
+                // apply settings one by one with internal error catching
+                try {
+                    if (s.ann) await sock.groupSettingUpdate(group.id, 'announcement');
+                    if (s.lock) await sock.groupSettingUpdate(group.id, 'locked');
+                    if (s.approve) await sock.groupUpdateSettings(group.id, 'membership_approval', 'on');
+                } catch (settErr) {
+                    console.error('Group Settings Error:', groupName, settErr.message);
+                }
 
                 ctx.reply(t.creating_single(groupName));
+                successCount++;
                 
-                // Jeda 5 detik antar pembuatan
+                // Jeda 5 detik antar pembuatan (Anti-Ban)
                 if (i < count) await new Promise(resolve => setTimeout(resolve, 5000));
             } catch (e) {
-                ctx.reply(`Gagal membuat grup ${i}: ` + e.message);
+                console.error('Group Creation Error:', groupName, e.message);
+                ctx.reply(`⚠️ Gagal membuat grup "${groupName}": ` + e.message);
             }
         }
         
-        ctx.reply(t.create_summary(count));
+        ctx.reply(t.create_summary(successCount, count));
         user.step = null;
         saveDb();
     }
 });
 
 bot.launch().then(() => console.log('Bot Active'));
+                         
