@@ -4,264 +4,286 @@ const {
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
-    makeInMemoryStore, 
-    jidDecode, 
-    proto, 
-    delay, 
-    generateForwardMessageContent, 
-    prepareWAMessageMedia, 
-    generateWAMessageFromContent, 
-    generateMessageID, 
-    downloadContentFromMessage, 
-    makeCacheableSignalKeyStore
+    delay
 } = require("@whiskeysockets/baileys");
 const { Telegraf, Markup } = require('telegraf');
 const pino = require('pino');
 const { Boom } = require('@hapi/boom');
 const fs = require('fs-extra');
-const qrcode = require('qrcode');
 const path = require('path');
 
-// --- Localization ---
+/**
+ * TRUE MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
+ * Optimized for Railway.app (Low RAM usage)
+ */
+
+const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
+const bot = new Telegraf(TG_BOT_TOKEN);
+const sockets = new Map(); // Store instances: chatId -> sock
+const DB_PATH = path.join(__dirname, 'db.json');
+
+// --- Database Helper ---
+if (!fs.existsSync(DB_PATH)) fs.writeJsonSync(DB_PATH, { users: {} });
+const db = fs.readJsonSync(DB_PATH);
+const saveDb = () => fs.writeJsonSync(DB_PATH, db);
+
+// --- i18n Localization ---
 const strings = {
     ID: {
-        welcome: 'Selamat datang di WA-TG Bot Orchestrator. Silakan login untuk memulai.',
-        choose_method: 'Pilih Metode Login:',
-        enter_number: 'Masukkan nomor WhatsApp Anda (format: 628xxx):',
-        pairing_code_msg: 'Kode Pairing Anda adalah: ',
-        qr_scan: 'Scan QR Code ini menggunakan WhatsApp Anda:',
-        logged_in: '✅ WhatsApp Terhubung!',
-        logged_out: '🚪 Sesi telah dihapus dan koneksi dihentikan.',
+        welcome: 'Selamat datang! Bot GC OWNER @XIXI8778.',
+        login_opt: 'Metode Login:',
+        input_num: 'Ketik nomor WA (contoh: 62812xxx):',
+        pairing_msg: (code) => `Kode Pairing Anda: *${code}*`,
+        connected: '✅ WhatsApp Terhubung!',
+        disconnected: '❌ Terputus. Silakan login kembali.',
+        logout_done: '🚪 Sesi dihapus. Koneksi dihentikan.',
         loading: 'Loading bos...',
-        group_created: '✅ Grup Berhasil Dibuat: ',
-        group_fail: '❌ Gagal membuat grup: ',
-        setting_menu: 'Pengaturan Grup Baru:',
-        lang_changed: 'Bahasa diubah ke Bahasa Indonesia.',
-        invalid_link: 'Link tidak valid atau bot gagal bergabung.',
-        join_success: '✅ Berhasil bergabung ke grup!',
-        export_format: (name, link, date) => `Nama Grup: ${name}\nLink Grup: ${link}\nTahun Pembuatan: ${date}`
+        creating_groups: (name, count) => `Sedang membuat ${count} grup "${name}"... (Delay 15s)`,
+        create_done: (name, total) => `[${name}] Berhasil dibuat✅\nTotal: ${total}`,
+        join_start: 'Memulai proses join massal...',
+        join_fail: (name) => `❌ Gagal/Tidak bisa masuk ke: ${name}`,
+        join_done: 'DONE✅ Semua link diproses.',
+        export_header: 'Daftar Grup & Link Invite:\n\n',
+        export_item: (name, link, date) => `Nama: ${name}\nLink: ${link}\nTgl: ${date}\n\n`,
+        menu: {
+            ann: 'Batas Pesan',
+            lock: 'Kunci Info',
+            add: 'Tambah Anggota',
+            approve: 'Persetujuan'
+        }
     },
     EN: {
-        welcome: 'Welcome to WA-TG Bot Orchestrator. Please login to start.',
-        choose_method: 'Choose Login Method:',
-        enter_number: 'Enter your WhatsApp number (format: 628xxx):',
-        pairing_code_msg: 'Your Pairing Code is: ',
-        qr_scan: 'Scan this QR Code using your WhatsApp:',
-        logged_in: '✅ WhatsApp Connected!',
-        logged_out: '🚪 Session deleted and connection stopped.',
+        welcome: 'Welcome! Bot GC OWNER @XIXI8778.',
+        login_opt: 'Login Method:',
+        input_num: 'Enter WA Number (e.g., 62812xxx):',
+        pairing_msg: (code) => `Your Pairing Code: *${code}*`,
+        connected: '✅ WhatsApp Connected!',
+        disconnected: '❌ Disconnected. Please login again.',
+        logout_done: '🚪 Session deleted. Connection stopped.',
         loading: 'Loading sir...',
-        group_created: '✅ Group Created Successfully: ',
-        group_fail: '❌ Failed to create group: ',
-        setting_menu: 'New Group Settings:',
-        lang_changed: 'Language changed to English.',
-        invalid_link: 'Invalid link or bot failed to join.',
-        join_success: '✅ Successfully joined the group!',
-        export_format: (name, link, date) => `Group Name: ${name}\nGroup Link: ${link}\nCreation Date: ${date}`
+        creating_groups: (name, count) => `Creating ${count} groups named "${name}"... (15s delay)`,
+        create_done: (name, total) => `[${name}] Created successfully✅\nTotal: ${total}`,
+        join_start: 'Starting mass join process...',
+        join_fail: (name) => `❌ Failed/Cannot join: ${name}`,
+        join_done: 'DONE✅ All links processed.',
+        export_header: 'Group List & Invite Links:\n\n',
+        export_item: (name, link, date) => `Name: ${name}\nLink: ${link}\nDate: ${date}\n\n`,
+        menu: {
+            ann: 'Restrict Msg',
+            lock: 'Lock Info',
+            add: 'Add Member',
+            approve: 'Approval'
+        }
     }
 };
 
-// --- Config & State ---
-const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
-const bot = new Telegraf(TG_BOT_TOKEN);
-const sockets = new Map(); // Store sockets by chatId
-const userPrefs = new Map(); // { lang: 'ID', settings: {} }
-const userState = new Map(); // Track steps in conversation
-
-// Helper for translation
-const t = (ctx, key, ...args) => {
-    const lang = userPrefs.get(ctx.chat.id)?.lang || 'ID';
-    const val = strings[lang][key];
-    return typeof val === 'function' ? val(...args) : val;
+const getT = (chatId) => {
+    const lang = db.users[chatId]?.lang || 'ID';
+    return strings[lang];
 };
 
-// --- WhatsApp Logic ---
+// --- WhatsApp Core Logic ---
 async function startWA(chatId, phoneNumber = null) {
-    const sessionDir = path.join(__dirname, 'sessions', `session-${chatId}`);
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const sessionPath = path.join(__dirname, 'sessions', `session-${chatId}`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
         version,
-        logger: pino({ level: 'silent' }),
+        logger: pino({ level: 'error' }), // RAM Efficient
         auth: state,
-        browser: ["Ubuntu", "Chrome", "20.0.04"],
-        printQRInTerminal: false
+        browser: ["Ubuntu", "Chrome", "20.0.04"]
     });
 
     sockets.set(chatId, sock);
 
     sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect } = update;
         
-        if (qr && !phoneNumber) {
-            // Store QR for display if needed
-            sock.currentQR = qr;
-        }
-
         if (connection === 'close') {
-            const code = (lastDisconnect.error instanceof Boom)?.output?.statusCode;
-            if (code !== DisconnectReason.loggedOut) {
-                startWA(chatId);
-            } else {
+            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startWA(chatId);
+            else {
                 sockets.delete(chatId);
+                bot.telegram.sendMessage(chatId, getT(chatId).disconnected);
             }
         } else if (connection === 'open') {
-            bot.telegram.sendMessage(chatId, strings[userPrefs.get(chatId)?.lang || 'ID'].logged_in);
+            if (!db.users[chatId].isConnected) {
+                bot.telegram.sendMessage(chatId, getT(chatId).connected);
+                db.users[chatId].isConnected = true;
+                saveDb();
+            }
         }
     });
 
     if (phoneNumber) {
-        await delay(3000);
+        await delay(5000);
         const code = await sock.requestPairingCode(phoneNumber.replace(/[^0-9]/g, ''));
         return code;
     }
-
     return sock;
 }
 
-// --- Menu UI ---
-const getMainMenu = (chatId) => {
-    const lang = userPrefs.get(chatId)?.lang || 'ID';
+// --- Keyboard Helpers ---
+const mainKeyboard = (chatId) => {
+    const t = getT(chatId);
     return Markup.inlineKeyboard([
         [Markup.button.callback('🔐 Login', 'login_menu'), Markup.button.callback('🚪 Logout', 'logout')],
-        [Markup.button.callback('👥 Create Group', 'setup_group'), Markup.button.callback('🔗 Export Links', 'get_links')],
-        [Markup.button.callback('➕ Join Group', 'join_mode'), Markup.button.callback('🌐 Language', 'lang_toggle')]
+        [Markup.button.callback('👥 Create Group', 'create_setting'), Markup.button.callback('🔗 Ambil Link', 'export_links')],
+        [Markup.button.callback('➕ Join Group', 'join_mode'), Markup.button.callback('🌐 Bahasa', 'toggle_lang')]
     ]);
 };
 
-const getSettingsMenu = (chatId) => {
-    const prefs = userPrefs.get(chatId) || { settings: { ann: false, lock: false, approve: false } };
-    const s = prefs.settings;
+const settingKeyboard = (chatId) => {
+    const t = getT(chatId);
+    const s = db.users[chatId].settings;
     return Markup.inlineKeyboard([
-        [Markup.button.callback(`Announce: ${s.ann ? 'ON' : 'OFF'}`, 'toggle_ann')],
-        [Markup.button.callback(`Lock Info: ${s.lock ? 'ON' : 'OFF'}`, 'toggle_lock')],
-        [Markup.button.callback(`Approval: ${s.approve ? 'ON' : 'OFF'}`, 'toggle_approve')],
-        [Markup.button.callback('🚀 EXECUTE CREATE', 'do_create'), Markup.button.callback('❌ Cancel', 'back_main')]
+        [Markup.button.callback(`${s.ann ? '✅' : '❌'} ${t.menu.ann}`, 'set_ann')],
+        [Markup.button.callback(`${s.lock ? '✅' : '❌'} ${t.menu.lock}`, 'set_lock')],
+        [Markup.button.callback(`${s.approve ? '✅' : '❌'} ${t.menu.approve}`, 'set_approve')],
+        [Markup.button.callback('🚀 EXECUTE CREATE', 'run_create')],
+        [Markup.button.callback('⬅️ Back', 'back_main')]
     ]);
 };
 
-// --- Bot Handlers ---
+// --- Bot Actions ---
 bot.start((ctx) => {
-    if (!userPrefs.has(ctx.chat.id)) userPrefs.set(ctx.chat.id, { lang: 'ID', settings: { ann: false, lock: false, approve: false } });
-    ctx.reply(t(ctx, 'welcome'), getMainMenu(ctx.chat.id));
+    const chatId = ctx.chat.id;
+    if (!db.users[chatId]) {
+        db.users[chatId] = { lang: 'ID', isConnected: false, settings: { ann: false, lock: false, approve: false } };
+        saveDb();
+    }
+    ctx.reply(getT(chatId).welcome, mainKeyboard(chatId));
 });
 
 bot.action('login_menu', (ctx) => {
-    ctx.editMessageText(t(ctx, 'choose_method'), Markup.inlineKeyboard([
-        [Markup.button.callback('QR Code', 'login_qr'), Markup.button.callback('Pairing Code', 'login_pairing')],
+    ctx.editMessageText(getT(ctx.chat.id).login_opt, Markup.inlineKeyboard([
+        [Markup.button.callback('Pairing Code', 'pairing_flow')],
         [Markup.button.callback('⬅️ Back', 'back_main')]
     ]));
 });
 
-bot.action('login_qr', async (ctx) => {
-    const sock = await startWA(ctx.chat.id);
-    ctx.reply(t(ctx, 'loading'));
-    let attempts = 0;
-    const checkQR = setInterval(async () => {
-        attempts++;
-        if (sock.currentQR) {
-            const buf = await qrcode.toBuffer(sock.currentQR);
-            ctx.replyWithPhoto({ source: buf }, { caption: t(ctx, 'qr_scan') });
-            clearInterval(checkQR);
-        }
-        if (attempts > 10) clearInterval(checkQR);
-    }, 2000);
-});
-
-bot.action('login_pairing', (ctx) => {
-    userState.set(ctx.chat.id, 'awaiting_number');
-    ctx.reply(t(ctx, 'enter_number'));
+bot.action('pairing_flow', (ctx) => {
+    db.users[ctx.chat.id].step = 'awaiting_num';
+    saveDb();
+    ctx.reply(getT(ctx.chat.id).input_num);
 });
 
 bot.action('logout', async (ctx) => {
-    const sock = sockets.get(ctx.chat.id);
+    const chatId = ctx.chat.id;
+    const sock = sockets.get(chatId);
     if (sock) {
         try { await sock.logout(); } catch (e) {}
-        sockets.delete(ctx.chat.id);
+        sockets.delete(chatId);
     }
-    const sessionDir = path.join(__dirname, 'sessions', `session-${ctx.chat.id}`);
-    if (fs.existsSync(sessionDir)) fs.removeSync(sessionDir);
-    ctx.reply(t(ctx, 'logged_out'), getMainMenu(ctx.chat.id));
+    const sessionPath = path.join(__dirname, 'sessions', `session-${chatId}`);
+    fs.rmSync(sessionPath, { recursive: true, force: true });
+    db.users[chatId].isConnected = false;
+    saveDb();
+    ctx.reply(getT(chatId).logout_out);
 });
 
-bot.action('setup_group', (ctx) => {
-    ctx.editMessageText(t(ctx, 'setting_menu'), getSettingsMenu(ctx.chat.id));
+bot.action('create_setting', (ctx) => {
+    ctx.editMessageText('Group Configuration:', settingKeyboard(ctx.chat.id));
 });
 
-bot.action(/toggle_(.+)/, (ctx) => {
-    const type = ctx.match[1];
-    const prefs = userPrefs.get(ctx.chat.id);
-    if (type === 'ann') prefs.settings.ann = !prefs.settings.ann;
-    if (type === 'lock') prefs.settings.lock = !prefs.settings.lock;
-    if (type === 'approve') prefs.settings.approve = !prefs.settings.approve;
-    ctx.editMessageText(t(ctx, 'setting_menu'), getSettingsMenu(ctx.chat.id));
+bot.action(/set_(.+)/, (ctx) => {
+    const key = ctx.match[1];
+    db.users[ctx.chat.id].settings[key] = !db.users[ctx.chat.id].settings[key];
+    saveDb();
+    ctx.editMessageText('Group Configuration:', settingKeyboard(ctx.chat.id));
 });
 
-bot.action('do_create', (ctx) => {
-    userState.set(ctx.chat.id, 'awaiting_group_name');
-    ctx.reply('Enter Group Name:');
+bot.action('run_create', (ctx) => {
+    db.users[ctx.chat.id].step = 'awaiting_name';
+    saveDb();
+    ctx.reply('Masukkan Nama Grup:');
 });
 
-bot.action('get_links', async (ctx) => {
-    const sock = sockets.get(ctx.chat.id);
+bot.action('export_links', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const sock = sockets.get(chatId);
     if (!sock) return ctx.reply('Login first!');
-    ctx.reply(t(ctx, 'loading'));
+    
+    ctx.reply(getT(chatId).loading);
     try {
         const groups = await sock.groupFetchAllParticipating();
+        let msg = getT(chatId).export_header;
         for (const jid in groups) {
             const g = groups[jid];
             const code = await sock.groupInviteCode(jid);
             const date = new Date(g.creation * 1000).toLocaleDateString('id-ID');
-            ctx.reply(t(ctx, 'export_format', g.subject, `https://chat.whatsapp.com/${code}`, date));
-            await delay(1000);
+            msg += getT(chatId).export_item(g.subject, `https://chat.whatsapp.com/${code}`, date);
+            if (msg.length > 3000) {
+                await ctx.reply(msg);
+                msg = '';
+            }
         }
+        if (msg) ctx.reply(msg);
     } catch (e) { ctx.reply('Error: ' + e.message); }
 });
 
-bot.action('lang_toggle', (ctx) => {
-    const prefs = userPrefs.get(ctx.chat.id);
-    prefs.lang = prefs.lang === 'ID' ? 'EN' : 'ID';
-    ctx.reply(t(ctx, 'lang_changed'), getMainMenu(ctx.chat.id));
+bot.action('toggle_lang', (ctx) => {
+    db.users[ctx.chat.id].lang = db.users[ctx.chat.id].lang === 'ID' ? 'EN' : 'ID';
+    saveDb();
+    ctx.reply('Language switched!', mainKeyboard(ctx.chat.id));
 });
 
+bot.action('back_main', (ctx) => ctx.editMessageText(getT(ctx.chat.id).welcome, mainKeyboard(ctx.chat.id)));
+
+// --- Message Handlers ---
 bot.on('text', async (ctx) => {
-    const state = userState.get(ctx.chat.id);
-    const sock = sockets.get(ctx.chat.id);
+    const chatId = ctx.chat.id;
+    const user = db.users[chatId];
+    const t = getT(chatId);
 
-    if (state === 'awaiting_number') {
+    if (user.step === 'awaiting_num') {
         const num = ctx.message.text.trim();
-        ctx.reply(t(ctx, 'loading'));
-        const code = await startWA(ctx.chat.id, num);
-        ctx.reply(`${t(ctx, 'pairing_code_msg')} ` + `*${code}*`, { parse_mode: 'Markdown' });
-        userState.delete(ctx.chat.id);
+        const code = await startWA(chatId, num);
+        ctx.reply(t.pairing_msg(code), { parse_mode: 'Markdown' });
+        user.step = null;
+        saveDb();
+    } else if (user.step === 'awaiting_name') {
+        user.tmpName = ctx.message.text;
+        user.step = 'awaiting_count';
+        saveDb();
+        ctx.reply('Berapa jumlah grup? (Maks 30):');
+    } else if (user.step === 'awaiting_count') {
+        const count = Math.min(parseInt(ctx.message.text), 30);
+        const sock = sockets.get(chatId);
+        ctx.reply(t.creating_groups(user.tmpName, count));
+        
+        for (let i = 1; i <= count; i++) {
+            try {
+                const group = await sock.groupCreate(`${user.tmpName} #${i}`, []);
+                const s = user.settings;
+                if (s.ann) await sock.groupSettingUpdate(group.id, 'announcement');
+                if (s.lock) await sock.groupSettingUpdate(group.id, 'locked');
+                if (s.approve) await sock.groupUpdateSettings(group.id, 'membership_approval', 'on');
+                await delay(15000); // Anti-ban delay
+            } catch (e) { console.error(e); }
+        }
+        ctx.reply(t.create_done(user.tmpName, count));
+        user.step = null;
+        saveDb();
     } 
-    else if (state === 'awaiting_group_name') {
-        if (!sock) return ctx.reply('Not connected!');
-        try {
-            const name = ctx.message.text;
-            const group = await sock.groupCreate(name, []);
-            const settings = userPrefs.get(ctx.chat.id).settings;
-            
-            if (settings.ann) await sock.groupSettingUpdate(group.id, 'announcement');
-            if (settings.lock) await sock.groupSettingUpdate(group.id, 'locked');
-            if (settings.approve) await sock.groupUpdateSettings(group.id, 'membership_approval', 'on');
-            
-            ctx.reply(t(ctx, 'group_created') + name);
-        } catch (e) { ctx.reply(t(ctx, 'group_fail') + e.message); }
-        userState.delete(ctx.chat.id);
-    }
-    // Auto Join Listener
+    // Join Mass Listener
     else if (ctx.message.text.includes('chat.whatsapp.com/')) {
+        const sock = sockets.get(chatId);
         if (!sock) return;
-        const code = ctx.message.text.split('chat.whatsapp.com/')[1].split(' ')[0];
-        try {
-            await sock.groupAcceptInvite(code);
-            ctx.reply(t(ctx, 'join_success'));
-        } catch (e) { ctx.reply(t(ctx, 'invalid_link')); }
+        const links = ctx.message.text.match(/chat\.whatsapp\.com\/[a-zA-Z0-9]+/g);
+        ctx.reply(t.join_start);
+        for (const link of links) {
+            const code = link.split('/')[1];
+            try {
+                await sock.groupAcceptInvite(code);
+                await delay(10000);
+            } catch (e) { ctx.reply(t.join_fail(link)); }
+        }
+        ctx.reply(t.join_done);
     }
 });
 
-bot.action('back_main', (ctx) => ctx.editMessageText(t(ctx, 'welcome'), getMainMenu(ctx.chat.id)));
-
-bot.launch().then(() => console.log('Telegram Bot Active'));
+bot.launch().then(() => console.log('Bot Active on Railway'));
+        
