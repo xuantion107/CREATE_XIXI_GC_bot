@@ -1,16 +1,348 @@
 
-{
-  "name": "wa-tg-orchestrator",
-  "version": "2.9.0",
-  "description": "Multi-Sender WA-TG Bot with Enhanced Visual UX",
-  "main": "index.js",
-  "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.2",
-    "telegraf": "^4.16.3",
-    "pino": "^8.19.0",
-    "@hapi/boom": "^10.0.1",
-    "fs-extra": "^11.2.0",
-    "path": "^0.12.7",
-    "qrcode": "^1.5.3"
-  }
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason, 
+    fetchLatestBaileysVersion, 
+    delay,
+    Browsers
+} = require("@whiskeysockets/baileys");
+const { Telegraf, Markup } = require('telegraf');
+const pino = require('pino');
+const { Boom } = require('@hapi/boom');
+const fs = require('fs-extra');
+const path = require('path');
+const QRCode = require('qrcode');
+const os = require('os');
+
+/**
+ * ADVANCED MULTI-SENDER WHATSAPP-TELEGRAM ORCHESTRATOR
+ * v5.0.0 - International Support & Subscription System
+ */
+
+// --- CONFIGURATION ---
+const TG_BOT_TOKEN = '8411630436:AAER4zJXYbKBrpHmCWIewNHg9THIDjUgtfs';
+const ADMIN_ID = 8496726839; // GANTI DENGAN ID TELEGRAM ANDA
+const bot = new Telegraf(TG_BOT_TOKEN);
+const sockets = new Map(); 
+const DB_PATH = path.join(__dirname, 'db.json');
+
+// --- Initialization ---
+if (!fs.existsSync(DB_PATH)) {
+    fs.writeJsonSync(DB_PATH, { 
+        users: {}, 
+        config: { maintenance: false } 
+    });
 }
+const db = fs.readJsonSync(DB_PATH);
+const saveDb = () => fs.writeJsonSync(DB_PATH, db);
+
+const strings = {
+    ID: {
+        welcome: 'Selamat datang! Kelola WhatsApp Anda via Telegram.\n\nSilakan pilih menu di bawah ini:',
+        login_menu: 'Silakan pilih metode masuk:',
+        input_num: 'Ketik nomor WA Anda lengkap dengan Kode Negara (Tanpa + atau Spasi).\nContoh: 62812xxx atau 1415xxx',
+        invalid_num: '⚠️ Nomor tidak valid! Masukkan hanya angka beserta kode negara. Contoh: 62812xxx',
+        pairing_code: (code) => `Kode Pairing Anda: *${code}*`,
+        qr_msg: 'Scan QR Code ini untuk login:',
+        loading: 'Loading bos...',
+        connected: '✅ WhatsApp Terhubung!',
+        disconnected: '❌ Koneksi terputus.',
+        logout_msg: 'Sesi telah dihapus dan logout berhasil.',
+        creating_single: (name) => `[${name}] Berhasil di Buat✅`,
+        create_summary: (total, requested) => `Total: ${total}/${requested} grup telah selesai dibuat.`,
+        lang_switched: 'Bahasa berhasil diubah ke Bahasa Indonesia 🇮🇩',
+        export_header: 'DAFTAR LINK GRUP (HANYA ADMIN)\n\n',
+        export_item: (name, link, date) => `Nama Group: ${name}\nLink: ${link}\n\n`,
+        input_join: 'Kirim link grup WhatsApp (Satu per baris):',
+        join_success: (name) => `✅ Berhasil masuk: ${name}`,
+        join_fail: (link) => `❌ Gagal masuk: ${link}`,
+        done: 'DONE✅',
+        expired: '⚠️ Akses Anda telah berakhir, silakan hubungi Admin (@Owner) untuk memperpanjang.',
+        maintenance: '⚠️ Bot sedang Maintenance.',
+        btn: {
+            login: '🔐 Masuk',
+            logout: '🚪 Keluar',
+            create: '👥 Buat Grup',
+            links: '🔗 Ambil Link',
+            join: '📥 Gabung Grup',
+            lang: '🌐 Bahasa',
+            back: '⬅️ Kembali'
+        }
+    },
+    EN: {
+        welcome: 'Welcome! Manage WhatsApp via Telegram.',
+        login_menu: 'Choose login method:',
+        input_num: 'Enter WA Number with Country Code (No + or Space).\nExample: 62812xxx or 1415xxx',
+        invalid_num: '⚠️ Invalid number! Use only digits + country code.',
+        pairing_code: (code) => `Your Pairing Code: *${code}*`,
+        qr_msg: 'Scan this QR Code:',
+        loading: 'Loading bos...',
+        connected: '✅ WhatsApp Connected!',
+        disconnected: '❌ Connection closed.',
+        logout_msg: 'Logged out successfully.',
+        creating_single: (name) => `[${name}] Created✅`,
+        create_summary: (total, requested) => `Total: ${total}/${requested} groups created.`,
+        lang_switched: 'Language switched to English 🇬🇧',
+        export_header: 'GROUP LINKS (ADMIN ONLY)\n\n',
+        export_item: (name, link, date) => `Group: ${name}\nLink: ${link}\n\n`,
+        input_join: 'Send WA group links (One per line):',
+        join_success: (name) => `✅ Joined: ${name}`,
+        join_fail: (link) => `❌ Failed: ${link}`,
+        done: 'DONE✅',
+        expired: '⚠️ Access expired. Contact Admin to renew.',
+        maintenance: '⚠️ Bot Maintenance.',
+        btn: {
+            login: '🔐 Login',
+            logout: '🚪 Logout',
+            create: '👥 Create Group',
+            links: '🔗 Get Links',
+            join: '📥 Join Group',
+            lang: '🌐 Language',
+            back: '⬅️ Back'
+        }
+    }
+};
+
+const getT = (chatId) => strings[db.users[chatId]?.lang || 'ID'];
+
+// --- Helper: Access Verification ---
+const checkAccess = (ctx) => {
+    const chatId = ctx.chat.id;
+    if (chatId === ADMIN_ID) return true;
+    
+    const user = db.users[chatId];
+    if (!user || !user.expiryDate) {
+        ctx.reply('❌ Anda tidak memiliki izin akses. Hubungi Admin.');
+        return false;
+    }
+    
+    if (user.status === 'blocked' || Date.now() > user.expiryDate) {
+        ctx.reply(getT(chatId).expired);
+        return false;
+    }
+    return true;
+};
+
+// --- WhatsApp Logic ---
+async function startWA(chatId, phoneNumber = null, isQRMode = false) {
+    const sessionDir = path.join(__dirname, 'sessions', `session-${chatId}`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { version } = await fetchLatestBaileysVersion();
+
+    if (sockets.has(chatId)) {
+        try { sockets.get(chatId).end(); } catch(e) {}
+    }
+
+    const sock = makeWASocket({
+        version,
+        logger: pino({ level: 'silent' }), 
+        auth: state,
+        printQRInTerminal: false,
+        browser: Browsers.ubuntu("Chrome")
+    });
+
+    sockets.set(chatId, sock);
+    sock.ev.on('creds.update', saveCreds);
+    
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        if (qr && isQRMode) {
+            try {
+                if (db.users[chatId]?.lastQrId) {
+                    try { await bot.telegram.deleteMessage(chatId, db.users[chatId].lastQrId); } catch (e) {}
+                }
+                const buf = await QRCode.toBuffer(qr);
+                const msg = await bot.telegram.sendPhoto(chatId, { source: buf }, { caption: getT(chatId).qr_msg });
+                db.users[chatId].lastQrId = msg.message_id;
+                saveDb();
+            } catch (e) {}
+        }
+        
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startWA(chatId, null, false);
+            else {
+                sockets.delete(chatId);
+                db.users[chatId].isConnected = false;
+                db.users[chatId].lastQrId = null;
+                saveDb();
+            }
+        } else if (connection === 'open') {
+            // Anti-Spam Connected message logic
+            if (!db.users[chatId].isConnected) {
+                db.users[chatId].isConnected = true;
+                saveDb();
+                bot.telegram.sendMessage(chatId, getT(chatId).connected);
+            }
+        }
+    });
+
+    if (phoneNumber) {
+        await delay(5000); // Bug Fix: 5s Delay
+        return await sock.requestPairingCode(phoneNumber.replace(/[^0-9]/g, ''));
+    }
+    return sock;
+}
+
+// --- Keyboards ---
+const langKbd = () => Markup.inlineKeyboard([
+    [Markup.button.callback('🇮🇩 Indonesia', 'set_lang_id')],
+    [Markup.button.callback('🇬🇧 English', 'set_lang_en')]
+]);
+
+const mainKbd = (chatId) => {
+    const t = getT(chatId);
+    return Markup.inlineKeyboard([
+        [Markup.button.callback(t.btn.login, 'login_menu'), Markup.button.callback(t.btn.logout, 'logout')],
+        [Markup.button.callback(t.btn.create, 'create_settings'), Markup.button.callback(t.btn.links, 'get_links')],
+        [Markup.button.callback(t.btn.join, 'join_menu'), Markup.button.callback(t.btn.lang, 'switch_lang')]
+    ]);
+};
+
+// --- ADMIN CMDS ---
+bot.command('adduser', (ctx) => {
+    if (ctx.chat.id !== ADMIN_ID) return;
+    const args = ctx.message.text.split(' ');
+    if (args.length < 3) return ctx.reply('Format: /adduser [UserID] [Days]');
+    
+    const targetId = args[1];
+    const days = parseInt(args[2]);
+    const expiry = Date.now() + (days * 24 * 60 * 60 * 1000);
+    
+    if (!db.users[targetId]) db.users[targetId] = { isConnected: false, settings: { ann: false, lock: false, approve: false } };
+    db.users[targetId].expiryDate = expiry;
+    db.users[targetId].status = 'active';
+    saveDb();
+    ctx.reply(`✅ Akses User ${targetId} diaktifkan selama ${days} hari.`);
+    bot.telegram.sendMessage(targetId, `🎁 Selamat! Akses Anda telah diaktifkan oleh Admin selama ${days} hari.`);
+});
+
+bot.command('stop', (ctx) => {
+    if (ctx.chat.id !== ADMIN_ID) return;
+    const targetId = ctx.message.text.split(' ')[1];
+    if (!targetId || !db.users[targetId]) return ctx.reply('UserID tidak ditemukan.');
+    
+    db.users[targetId].status = 'blocked';
+    saveDb();
+    ctx.reply(`⛔ Akses User ${targetId} telah dihentikan.`);
+    bot.telegram.sendMessage(targetId, '⛔ Akses Anda telah dihentikan oleh Admin.');
+});
+
+bot.command(['owner', 'admin'], (ctx) => {
+    if (ctx.chat.id !== ADMIN_ID) return;
+    ctx.reply('🛠️ **OWNER PANEL v5.0**', Markup.inlineKeyboard([
+        [Markup.button.callback('📊 Statistik', 'admin_stats')],
+        [Markup.button.callback('📣 Broadcast (Teks/Foto)', 'admin_broadcast_prompt')],
+        [Markup.button.callback('🛠️ Toggle Maintenance', 'admin_toggle_maintenance')]
+    ]));
+});
+
+// --- TEXT/PHOTO HANDLER (BROADCAST & INPUT) ---
+bot.on(['text', 'photo'], async (ctx) => {
+    const chatId = ctx.chat.id;
+    const user = db.users[chatId];
+    if(!user) return;
+
+    // Admin Broadcast Logic (Teks & Foto)
+    if (chatId === ADMIN_ID && user.step === 'admin_broadcast_msg') {
+        const users = Object.keys(db.users);
+        ctx.reply(`⏳ Memulai broadcast ke ${users.length} user...`);
+        let success = 0;
+        for (const id of users) {
+            try {
+                if (ctx.message.photo) {
+                    await bot.telegram.sendPhoto(id, ctx.message.photo[ctx.message.photo.length - 1].file_id, { 
+                        caption: '📢 **BROADCAST OWNER**\n\n' + (ctx.message.caption || ''), 
+                        parse_mode: 'Markdown' 
+                    });
+                } else {
+                    await bot.telegram.sendMessage(id, '📢 **BROADCAST OWNER**\n\n' + ctx.message.text, { parse_mode: 'Markdown' });
+                }
+                success++;
+            } catch (e) {}
+        }
+        ctx.reply(`✅ Selesai! Terkirim ke ${success} user.`);
+        user.step = null;
+        saveDb();
+        return;
+    }
+
+    // Common Step Check with Authorization
+    if (!checkAccess(ctx)) return;
+
+    if (user.step === 'await_num') {
+        const num = ctx.message.text.trim().replace(/[^0-9]/g, '');
+        if (num.length < 8) return ctx.reply(getT(chatId).invalid_num);
+        
+        ctx.reply(getT(chatId).loading);
+        try {
+            const code = await startWA(chatId, num);
+            ctx.reply(getT(chatId).pairing_code(code), { parse_mode: 'Markdown' });
+            user.step = null;
+            saveDb();
+        } catch (e) { ctx.reply('❌ Gagal: ' + e.message); }
+    } 
+    // ... Other steps (await_name, await_count, etc.) with 'Loading bos' logic
+    else if (user.step === 'await_name') {
+        user.tmpName = ctx.message.text.trim();
+        user.step = 'await_count';
+        saveDb();
+        ctx.reply('Berapa jumlah grup? (Maks 30):');
+    } else if (user.step === 'await_count') {
+        const count = parseInt(ctx.message.text);
+        if (isNaN(count) || count <= 0 || count > 30) return ctx.reply('⚠️ Masukkan 1-30!');
+        const sock = sockets.get(chatId);
+        if (!sock) return ctx.reply('WhatsApp belum login!');
+        
+        ctx.reply(getT(chatId).loading); // "Loading bos"
+        for (let i = 1; i <= count; i++) {
+            const gName = `${user.tmpName} #${i}`;
+            try {
+                await sock.groupCreate(gName, []);
+                ctx.reply(getT(chatId).creating_single(gName));
+                await delay(7000); 
+            } catch (e) { ctx.reply(`❌ Gagal: ` + e.message); }
+        }
+        ctx.reply(getT(chatId).done);
+        user.step = null;
+        saveDb();
+    }
+});
+
+// --- CALLBACK ACTIONS ---
+bot.action('login_menu', (ctx) => {
+    if (!checkAccess(ctx)) return;
+    ctx.editMessageText(getT(ctx.chat.id).login_menu, Markup.inlineKeyboard([
+        [Markup.button.callback('📸 Scan QR', 'login_qr'), Markup.button.callback('🔢 Pairing Code', 'login_pairing')],
+        [Markup.button.callback('⬅️ Kembali', 'back_main')]
+    ]));
+});
+
+bot.action('login_pairing', (ctx) => {
+    db.users[ctx.chat.id].step = 'await_num';
+    saveDb();
+    ctx.reply(getT(ctx.chat.id).input_num);
+});
+
+bot.action('admin_broadcast_prompt', (ctx) => {
+    if (ctx.chat.id !== ADMIN_ID) return;
+    db.users[ADMIN_ID].step = 'admin_broadcast_msg';
+    saveDb();
+    ctx.reply('📢 Kirim Pesan atau Foto yang ingin di-broadcast:');
+});
+
+bot.action('switch_lang', (ctx) => {
+    ctx.editMessageText('🌐 Pilih Bahasa / Select Language', langKbd());
+});
+
+bot.action(/set_lang_(id|en)/, async (ctx) => {
+    const lang = ctx.match[1].toUpperCase();
+    db.users[ctx.chat.id].lang = lang;
+    saveDb();
+    ctx.editMessageText(strings[lang].welcome, mainKbd(ctx.chat.id));
+});
+
+bot.action('back_main', (ctx) => ctx.editMessageText(getT(ctx.chat.id).welcome, mainKbd(ctx.chat.id)));
+
+bot.launch().then(() => console.log('Bot v5.0 Active - Subscription System Running'));
