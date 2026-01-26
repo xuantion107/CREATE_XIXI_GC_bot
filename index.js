@@ -22,7 +22,7 @@ const os = require('os');
 
 // --- [ SETTINGS ] ---
 const TG_BOT_TOKEN = '8324023704:AAFnD91Azl7qCMBDNEQmI932n3cXO4d7cMg';
-const ADMIN_ID = 8006003898; // GANTI DENGAN ID TELEGRAM ANDA
+const ADMIN_ID = 8025395617; // GANTI DENGAN ID TELEGRAM ANDA
 const bot = new Telegraf(TG_BOT_TOKEN);
 
 const sockets = new Map(); 
