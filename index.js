@@ -93,7 +93,7 @@ const checkAccess = (ctx) => {
     if (chatId === ADMIN_ID) return true;
     const user = db.users[chatId];
     if (!user || !user.expiry) {
-        ctx.reply('⛔ Akses Ditolak. Hubungi Admin (@XIXI8778) untuk mendaftarkan ID Anda.');
+        ctx.reply('⛔ Akses Ditolak. Hubungi Admin (@Fileabdul786) untuk mendaftarkan ID Anda.');
         return false;
     }
     if (Date.now() > user.expiry) {
@@ -108,7 +108,7 @@ const getMenuUI = (chatId) => {
     const langCode = db.users[chatId]?.lang || 'ID';
     const t = translations[langCode];
     
-    const text = `🤖 *WhatsApp Group Creator Bot*\n\n${t.status}: ${isConn}\n${t.lang}: ${langCode}\n${t.owner}: @XIXI8778`;
+    const text = `🤖 *WhatsApp Group Creator Bot*\n\n${t.status}: ${isConn}\n${t.lang}: ${langCode}\n${t.owner}: @Fileabdul786`;
 
     const row1 = [Markup.button.callback(t.btn_login, 'login_menu'), Markup.button.callback(t.btn_logout, 'logout_wa')];
     const row2 = [Markup.button.callback(t.btn_create, 'create_prompt'), Markup.button.callback(t.btn_links, 'get_links')];
