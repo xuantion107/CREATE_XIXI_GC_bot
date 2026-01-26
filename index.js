@@ -23,7 +23,7 @@ const path = require('path');
 const express = require('express');
 
 // ============= CONFIGURATION =============
-const BOT_TOKEN = process.env.BOT_TOKEN || "8505495138:AAHtBozhdrzWfh7Ad-DiDF7p0anJAhhxElk";
+const BOT_TOKEN = process.env.BOT_TOKEN || "8211164309:AAEJwHJ1ser8WzVh7UkLAVRYucyMlYikR-8";
 const PORT = process.env.PORT || 3000;
 const ADMIN_IDS = [8496726839, 987654321];
 const FORCE_JOIN_GROUP = "@xuantionZANGvip";
