@@ -1,25 +1,27 @@
 ```javascript
+require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 
-// Replace with your Telegram Bot Token
-const bot = new Telegraf('8538468032:AAEQRgJ7uqnvXBijPHvPn292blBsh2ICE2E');
+// Initialize bot with token from environment variables
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
+// Product Data
 const products = [
   {
-    id: "1",
-    name: "Nitro Boost Monthly",
-    price: 9.99,
-    description: "Elevate your discord experience with high-quality audio and more perks.",
-    category: "Digital",
-    image: "https://picsum.photos/seed/nitro/200/200"
+    "id": "1",
+    "name": "Nitro Boost Monthly",
+    "price": 9.99,
+    "description": "Elevate your discord experience with high-quality audio and more perks.",
+    "category": "Digital",
+    "image": "https://picsum.photos/seed/nitro/200/200"
   },
   {
-    id: "2",
-    name: "Bot Source Code",
-    price: 49,
-    description: "Complete source code for this shop bot built with Node.js.",
-    category: "Service",
-    image: "https://picsum.photos/seed/code/200/200"
+    "id": "2",
+    "name": "Bot Source Code",
+    "price": 49,
+    "description": "Complete source code for this shop bot built with Node.js.",
+    "category": "Service",
+    "image": "https://picsum.photos/seed/code/200/200"
   }
 ];
 
@@ -34,65 +36,72 @@ bot.start((ctx) => {
   );
 });
 
-// Catalog Action
+// Catalog Handler
 bot.action('btn_catalog', async (ctx) => {
   try {
     await ctx.answerCbQuery();
-    await ctx.reply('🛒 *AutoShop Prime Catalog*', { parse_mode: 'Markdown' });
+    
+    if (products.length === 0) {
+      return ctx.reply("The catalog is currently empty.");
+    }
 
+    // Loop through products and send each as a separate message
     for (const product of products) {
+      const caption = `<b>${product.name}</b>\n` +
+                      `Category: <i>${product.category}</i>\n` +
+                      `${product.description}\n\n` +
+                      `<b>Price: $${product.price}</b>`;
+
       await ctx.replyWithPhoto(product.image, {
-        caption: `*${product.name}*\n\n${product.description}\n\n💵 Price: $${product.price}\n📂 Category: ${product.category}`,
-        parse_mode: 'Markdown',
+        caption: caption,
+        parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           Markup.button.callback('Buy Now', `buy_${product.id}`)
         ])
       });
     }
   } catch (error) {
-    console.error('Catalog Error:', error);
-    ctx.reply('Sorry, there was an issue loading the catalog.');
+    console.error('Error showing catalog:', error);
+    ctx.reply("An error occurred while loading the catalog.");
   }
 });
 
-// Support Action
+// Support Handler
 bot.action('btn_support', async (ctx) => {
   try {
     await ctx.answerCbQuery();
-    await ctx.reply('👨‍💻 Support: Please contact @Admin for assistance.');
+    ctx.reply("Support functionality is under construction. Please contact an admin directly.");
   } catch (error) {
     console.error(error);
   }
 });
 
-// My Orders Action
+// My Orders Handler
 bot.action('btn_orders', async (ctx) => {
   try {
     await ctx.answerCbQuery();
-    await ctx.reply('📂 You currently have no active orders.');
+    ctx.reply("You have no active orders at the moment.");
   } catch (error) {
     console.error(error);
   }
 });
 
-// Buy Now Action Handler
-bot.action(/^buy_(.+)$/, async (ctx) => {
+// Buy Now Button Handler
+bot.action(/buy_(.+)/, async (ctx) => {
   try {
     const productId = ctx.match[1];
     const product = products.find(p => p.id === productId);
 
+    await ctx.answerCbQuery();
+
     if (product) {
-      await ctx.answerCbQuery(`Selected: ${product.name}`);
-      await ctx.reply(
-        `✅ *Initiating Checkout*\n\nProduct: ${product.name}\nTotal: $${product.price}\n\nPlease proceed with payment provider...`,
-        { parse_mode: 'Markdown' }
-      );
+      ctx.reply(`You have initiated checkout for: <b>${product.name}</b> ($${product.price}).`, { parse_mode: 'HTML' });
     } else {
-      await ctx.answerCbQuery('Product not found.');
+      ctx.reply("Sorry, this product is no longer available.");
     }
   } catch (error) {
-    console.error('Buy Action Error:', error);
-    ctx.reply('An error occurred processing your request.');
+    console.error('Error in purchase flow:', error);
+    ctx.reply("An error occurred processing your request.");
   }
 });
 
@@ -101,9 +110,9 @@ bot.catch((err, ctx) => {
   console.log(`Ooops, encountered an error for ${ctx.updateType}`, err);
 });
 
-// Launch Bot
+// Launch the bot
 bot.launch().then(() => {
-    console.log('AutoShop Prime is running...');
+  console.log('AutoShop Prime is running...');
 });
 
 // Enable graceful stop
