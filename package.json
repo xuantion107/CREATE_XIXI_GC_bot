@@ -1,18 +1,16 @@
 {
-  "name": "wa-tg-orchestrator-v4",
-  "version": "4.5.0-stable",
-  "description": "Stable WhatsApp-Telegram Orchestrator with Professional Admin Panel",
+  "name": "autoshop-prime",
+  "version": "1.0.0",
+  "description": "Auto Shop Bot for AutoShop Prime",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.0",
-    "@hapi/boom": "^10.0.1",
-    "telegraf": "^4.15.3",
-    "pino": "^8.16.1",
-    "fs-extra": "^11.1.1",
-    "qrcode": "^1.5.3",
-    "path": "^0.12.7"
+    "telegraf": "^4.16.3",
+    "dotenv": "^16.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
