@@ -1,0 +1,28 @@
+{
+  "name": "telegram-virtual-number-bot",
+  "version": "1.0.0",
+  "description": "Bot Telegram untuk penjualan nomor virtual dengan integrasi Hero-SMS dan Atlantic-Pedia Payment",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "virtual-number",
+    "hero-sms",
+    "payment-gateway"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.64.0",
+    "axios": "^1.6.5",
+    "dotenv": "^16.3.1",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
