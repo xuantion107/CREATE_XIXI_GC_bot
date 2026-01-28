@@ -6,7 +6,7 @@ const cron = require('node-cron');
 // Konfigurasi
 const BOT_TOKEN = process.env.BOT_TOKEN || '8538468032:AAH_a-ZUrV7hH80h29i_rCXIeILAvzQdFYI';
 const HERO_SMS_API_KEY = process.env.HERO_SMS_API_KEY || 'A8bA38f65937980Ac6dcb490632c01A5';
-const ATLANTIC_API_KEY = process.env.ATLANTIC_API_KEY || 'YOUR_ATLANTIC_API_KEY';
+const ATLANTIC_API_KEY = process.env.ATLANTIC_API_KEY || 'api dalam tahap pengembangan';
 const ADMIN_ID = process.env.ADMIN_ID ? parseInt(process.env.ADMIN_ID) : 8496726839; // Ganti dengan ID Telegram admin
 const USD_TO_IDR = 16000; // Rate konversi USD ke IDR
 const COUNTRIES_PER_PAGE = 8; // Jumlah negara per halaman
@@ -271,17 +271,17 @@ async function createQRISPayment(amount, userId) {
     return {
       success: true,
       paymentId: paymentId,
-      qrisUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=QRIS_${paymentId}_${amount}`,
+      qrisUrl: `https://api._${paymentId}_${amount}`,
       transactionId: paymentId
     };
   } catch (error) {
-    console.error('Error creating QRIS payment:', error.message);
+    console.error('QRIS MASIH DALAM PENGEMBANGAN:', error.message);
     // Fallback untuk testing
     const paymentId = `PAY_${userId}_${Date.now()}`;
     return {
       success: true,
       paymentId: paymentId,
-      qrisUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=QRIS_${paymentId}_${amount}`,
+      qrisUrl: `https://api._${paymentId}_${amount}`,
       transactionId: paymentId
     };
   }
