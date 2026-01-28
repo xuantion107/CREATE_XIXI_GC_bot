@@ -1059,14 +1059,12 @@ async function processDeposit(chatId, userId, amount, messageId = null) {
   });
   
   const depositMessage = `💰 *Deposit ${formatRupiah(amount)}*\n\n` +
-    `Scan QRIS di bawah untuk melakukan pembayaran:\n\n` +
-    `🆔 ID Transaksi: \`${paymentResult.transactionId}\`\n\n` +
-    `Setelah transfer, klik tombol "Cek Pembayaran" untuk verifikasi.`;
+    `Fitur Masih dalam pengembangan silahkan tunggu1 hari akan segera siap hubungi admin jika oder manual.`;
   
   const keyboard = {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🔍 Cek Pembayaran', callback_data: `check_payment_${paymentResult.paymentId}` }],
+        [{ text: '⚠️Masih dalam Pengembangan', callback_data: `check_payment_${paymentResult.paymentId}` }],
         [{ text: '🔙 Kembali', callback_data: 'back_main' }]
       ]
     }
