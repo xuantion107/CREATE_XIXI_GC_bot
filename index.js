@@ -5,7 +5,7 @@ const cron = require('node-cron');
 
 // Konfigurasi
 const BOT_TOKEN = process.env.BOT_TOKEN || '8538468032:AAH_a-ZUrV7hH80h29i_rCXIeILAvzQdFYI';
-const HERO_SMS_API_KEY = process.env.HERO_SMS_API_KEY || 'YOUR_HERO_SMS_API_KEY';
+const HERO_SMS_API_KEY = process.env.HERO_SMS_API_KEY || '6842605456b4339b26A8e0218101ed7e';
 const ATLANTIC_API_KEY = process.env.ATLANTIC_API_KEY || 'YOUR_ATLANTIC_API_KEY';
 const ADMIN_ID = process.env.ADMIN_ID ? parseInt(process.env.ADMIN_ID) : 8496726839; // Ganti dengan ID Telegram admin
 const USD_TO_IDR = 16000; // Rate konversi USD ke IDR
