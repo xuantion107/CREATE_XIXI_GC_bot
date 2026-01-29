@@ -1,13 +1,13 @@
 {
   "name": "telegram-moderator-bot",
-  "version": "1.0.0",
-  "description": "Bot moderator Telegram dengan fitur auto mute dan mention all",
+  "version": "2.0.0",
+  "description": "Bot moderator Telegram dengan fitur auto mute, mention all, dan welcome message",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "keywords": ["telegram", "bot", "moderator"],
-  "author": "xixi",
+  "author": "",
   "license": "ISC",
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0"
