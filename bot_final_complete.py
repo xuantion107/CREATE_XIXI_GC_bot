@@ -10,8 +10,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
 
 # KONFIGURASI
-BOT_TOKEN = "8012579180:AAE-MqM151HprLTCBAJUFS5CpLv3U_csNT4"
-ADMIN_IDS = [8496726839, 987654321]
+BOT_TOKEN = "8466591141:AAEaDpi5UwGZM0RXbVeXT39QPXXWlOHx7j4"
+ADMIN_IDS = [8496726839, 8496726839]
 FORCE_JOIN_GROUP = "@xuantionZANGvip"
 FORCE_JOIN_CHANNEL = "@xuantaionzang"
 CEO_USERNAME = "@XIXI8778"
