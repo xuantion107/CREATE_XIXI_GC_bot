@@ -11,7 +11,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- KONFIGURASI ---
-BOT_TOKEN = "8350863215:AAE5F8tAy5Jq_con0R4d692MaZEXkKOcg9k"
+BOT_TOKEN = "8219268200:AAGNF8otuDit6Ojd01ofDD8lL2wRJx1UDl4"
 API_KEY = "v6hBGie2cPN7LXIeZf2PGoMMAwkCGlikn3K1eKGRmbb4CT0kfpFL4XAGLjgVXvQdnr3D8gZWYhICkbQe9Raxz71IaaDrvjsQpj2F"
 BASE_URL = "https://atlantic-pedia.co.id/api/v2"
 
