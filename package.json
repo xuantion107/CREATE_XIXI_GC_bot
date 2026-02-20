@@ -1,7 +1,7 @@
 {
-  "name": "telegram-bot-cari-cuan",
-  "version": "1.0.0",
-  "description": "Telegram Bot Cari Cuan - No Database needed!",
+  "name": "caricuan-bot",
+  "version": "2.0.0",
+  "description": "Telegram Bot Cari Cuan - JSON Storage, No Database",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
