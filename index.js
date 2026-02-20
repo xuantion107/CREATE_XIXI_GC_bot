@@ -1,1057 +1,643 @@
-// ╔══════════════════════════════════════════════════════════════════╗
-// ║         TELEGRAM BOT - CARI CUAN PRO v3.0                       ║
-// ║   Storage  : database.json (File System lokal)                   ║
-// ║   Safelink : safelinku.com API                                   ║
-// ║   Deploy   : Railway.app                                         ║
-// ╚══════════════════════════════════════════════════════════════════╝
+// ============================================================
+// KONFIGURASI UTAMA - Letakkan variabel di sini
+// ============================================================
+const BOT_TOKEN = '8219268200:AAGNF8otuDit6Ojd01ofDD8lL2wRJx1UDl4';
+const ADMIN_ID = 8496726839;
+const SAFELINK_API_URL = 'https://safelinku.com/api?api=b28d306541fad2272ed9c4acd1a725a2a27b0460';
+// ============================================================
 
-// ================================================================
-//  ⚙️  KONFIGURASI UTAMA — EDIT JIKA DIPERLUKAN
-// ================================================================
-
-const BOT_TOKEN       = '7596953618:AAFLpibLwDG3ZrT2yeiILPoYhO52-mMyh_Y';
-const ADMIN_ID        = 8496726839;
-const BOT_USERNAME    = 'GroupA1securitybot';
-const ADMIN_USERNAME  = '@xuantionzang';
-
-// Safelink API — ganti API_KEY dengan key milikmu
-const SAFELINK_API    = 'https://safelinku.com/api?api=04cb8650fa3abed9f459c8e1a0482dde20adae4b&url=';
-
-// ================================================================
-//  🔧  KONSTANTA SISTEM
-// ================================================================
-const MIN_WITHDRAW    = 20000;   // Minimal penarikan (Rupiah)
-const REFERRAL_BONUS  = 100;     // Bonus referral per orang (Rupiah)
-const MAX_TUGAS_USER  = 5;       // Maksimal tugas ditampilkan ke user
-
-// ================================================================
-//  📦  IMPORT
-// ================================================================
 const { Telegraf, Markup, session } = require('telegraf');
 const axios = require('axios');
-const fs    = require('fs');
-const path  = require('path');
+const fs = require('fs');
+const path = require('path');
 
-// ================================================================
-//  💾  DATABASE (File JSON)
-// ================================================================
 const DB_FILE = path.join(__dirname, 'database.json');
 
+// ─── DATABASE HELPERS ────────────────────────────────────────
 function loadDB() {
   if (!fs.existsSync(DB_FILE)) {
-    const init = {
-      users    : {},   // { [userId]: UserObject }
-      tugas    : [],   // daftar tugas dari admin
-      withdraws: [],   // riwayat penarikan
-      buktiQueue: [],  // antrian bukti menunggu validasi
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(init, null, 2), 'utf8');
+    const init = { users: {}, tasks: [], submissions: [] };
+    fs.writeFileSync(DB_FILE, JSON.stringify(init, null, 2));
     return init;
   }
-  try {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-  } catch {
-    return { users: {}, tugas: [], withdraws: [], buktiQueue: [] };
-  }
+  return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
 }
 
 function saveDB(db) {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
-  } catch (err) {
-    console.error('[saveDB] Gagal simpan:', err.message);
-  }
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
-function getUser(db, from) {
-  const id = String(from.id);
-  if (!db.users[id]) {
-    db.users[id] = {
-      userId       : from.id,
-      username     : from.username   || 'unknown',
-      firstName    : from.first_name || 'User',
-      saldo        : 0,
-      referralBy   : null,
-      referralCount: 0,
-      tugasAmbil   : [],   // { tugasId, safelinkUrl, ambilAt }
-      tugasSelesai : [],   // id tugas yang sudah divalidasi & dibayar
-      joinedAt     : new Date().toISOString(),
+function getUser(db, userId, ctx) {
+  if (!db.users[userId]) {
+    db.users[userId] = {
+      id: userId,
+      username: ctx?.from?.username || '',
+      name: ctx?.from?.first_name || 'User',
+      balance: 0,
+      referrals: 0,
+      referredBy: null,
+      completedTasks: [],
+      claimedTasks: {},
+      joinedAt: Date.now(),
     };
-  } else {
-    db.users[id].username  = from.username   || db.users[id].username;
-    db.users[id].firstName = from.first_name || db.users[id].firstName;
-    if (!db.users[id].tugasAmbil)   db.users[id].tugasAmbil   = [];
-    if (!db.users[id].tugasSelesai) db.users[id].tugasSelesai = [];
   }
-  return db.users[id];
+  return db.users[userId];
 }
 
-// ================================================================
-//  🛠️  HELPER
-// ================================================================
-const toRp  = (n) => 'Rp' + Number(n || 0).toLocaleString('id-ID');
-const nowId = ()  => new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-const genId = ()  => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-
-// Panggil Safelink API dan kembalikan URL pendek
-async function getSafelink(targetUrl) {
-  try {
-    const encoded  = encodeURIComponent(targetUrl);
-    const apiUrl   = SAFELINK_API + encoded;
-    const response = await axios.get(apiUrl, { timeout: 10000 });
-    // Respons safelinku: { status: 'success', shortenedUrl: '...' }
-    const data = response.data;
-    if (data && data.shortenedUrl) return data.shortenedUrl;
-    if (data && data.short_url)    return data.short_url;
-    if (data && typeof data === 'string' && data.startsWith('http')) return data;
-    console.error('[safelink] Respons tidak terduga:', JSON.stringify(data));
-    return null;
-  } catch (err) {
-    console.error('[safelink] Error:', err.message);
-    return null;
+// ─── SAFELINK API ────────────────────────────────────────────
+async function getSafelinkUrl(originalUrl) {
+  const apiUrl = SAFELINK_API_URL + encodeURIComponent(originalUrl);
+  const res = await axios.get(apiUrl, { timeout: 10000 });
+  // Respons API biasanya { status: 'success', shortenedUrl: '...' } atau field lain
+  const data = res.data;
+  if (data && (data.shortenedUrl || data.short_url || data.url || data.result)) {
+    return data.shortenedUrl || data.short_url || data.url || data.result;
   }
+  // Jika API mengembalikan string langsung
+  if (typeof data === 'string' && data.startsWith('http')) return data;
+  throw new Error('Safelink API tidak mengembalikan URL valid: ' + JSON.stringify(data));
 }
 
-// ================================================================
-//  🤖  BOT
-// ================================================================
+// ─── BOT SETUP ───────────────────────────────────────────────
 const bot = new Telegraf(BOT_TOKEN);
 bot.use(session());
 
-// ================================================================
-//  🎨  KEYBOARD
-// ================================================================
-const menuUtama = () =>
-  Markup.inlineKeyboard([
-    [Markup.button.callback('💰  DAFTAR TUGAS',   'menu_tugas')],
-    [Markup.button.callback('📸  KONFIRMASI TUGAS', 'menu_konfirmasi')],
-    [Markup.button.callback('📢  PASANG IKLAN',   'menu_iklan')],
-    [Markup.button.callback('👤  PROFIL SAYA',    'menu_profil')],
-    [Markup.button.callback('👫  UNDANG TEMAN',   'menu_referral')],
-    [Markup.button.callback('💸  TARIK SALDO',    'menu_tarik')],
-  ]);
+function initSession(ctx) {
+  if (!ctx.session) ctx.session = {};
+}
 
-const menuAdmin = () =>
-  Markup.inlineKeyboard([
-    [Markup.button.callback('➕  Tambah Tugas',        'adm_tambah')],
-    [Markup.button.callback('✅  Validasi Bukti',       'adm_validasi')],
-    [Markup.button.callback('📊  Statistik Bot',        'adm_stats')],
-    [Markup.button.callback('📢  Broadcast',            'adm_broadcast')],
-    [Markup.button.callback('📥  Data User (.txt)',     'adm_download')],
-  ]);
+// ─── KEYBOARDS ───────────────────────────────────────────────
+const userKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback('💰 DAFTAR TUGAS', 'menu_tasks')],
+  [Markup.button.callback('📸 KONFIRMASI TUGAS', 'menu_confirm')],
+  [Markup.button.callback('📢 PASANG IKLAN', 'menu_ads')],
+  [Markup.button.callback('👤 PROFIL SAYA', 'menu_profile')],
+  [Markup.button.callback('👫 UNDANG TEMAN', 'menu_referral')],
+  [Markup.button.callback('💸 TARIK SALDO', 'menu_withdraw')],
+]);
 
-const btnMenu = () =>
-  Markup.inlineKeyboard([[Markup.button.callback('🔙  Menu Utama', 'back_main')]]);
+const adminKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback('➕ TAMBAH TUGAS', 'admin_add_task')],
+  [Markup.button.callback('📊 STATISTIK BOT', 'admin_stats')],
+  [Markup.button.callback('📢 BROADCAST', 'admin_broadcast')],
+  [Markup.button.callback('📥 DATA USER (.txt)', 'admin_export')],
+]);
 
-
-// ================================================================
-//  🚀  /start
-// ================================================================
+// ─── START ───────────────────────────────────────────────────
 bot.start(async (ctx) => {
-  try {
-    const db    = loadDB();
-    const from  = ctx.from;
-    const isNew = !db.users[String(from.id)];
-    const user  = getUser(db, from);
+  initSession(ctx);
+  const db = loadDB();
+  const userId = ctx.from.id.toString();
+  const user = getUser(db, userId, ctx);
 
-    // Proses referral untuk user baru
-    const payload = ctx.startPayload;
-    if (isNew && payload && /^\d+$/.test(payload)) {
-      const refId = String(payload);
-      if (refId !== String(from.id) && db.users[refId]) {
-        user.referralBy = Number(refId);
-        db.users[refId].saldo         += REFERRAL_BONUS;
-        db.users[refId].referralCount += 1;
-        saveDB(db);
-        try {
-          await bot.telegram.sendMessage(Number(refId),
-            `🎉 <b>Temanmu bergabung!</b>\n\n` +
-            `👤 <b>${from.first_name}</b> baru saja join via link referralmu.\n` +
-            `💰 +${toRp(REFERRAL_BONUS)} sudah masuk ke saldomu!`,
-            { parse_mode: 'HTML' }
-          );
-        } catch (_) {}
-      }
+  // Referral handling
+  const startPayload = ctx.startPayload;
+  if (startPayload && startPayload.startsWith('ref_')) {
+    const refId = startPayload.replace('ref_', '');
+    if (refId !== userId && !user.referredBy && db.users[refId]) {
+      user.referredBy = refId;
+      db.users[refId].referrals = (db.users[refId].referrals || 0) + 1;
+      db.users[refId].balance += 100;
+      await bot.telegram.sendMessage(refId, `🎉 Seseorang bergabung menggunakan link referral Anda! +Rp100 telah ditambahkan ke saldo Anda.`).catch(() => {});
     }
+  }
 
+  saveDB(db);
+
+  await ctx.replyWithHTML(
+    `👋 Selamat datang, <b>${ctx.from.first_name}</b>!\n\n` +
+    `🤖 Bot ini memungkinkan kamu mengerjakan tugas iklan dan mendapatkan penghasilan.\n\n` +
+    `Pilih menu di bawah ini:`,
+    userKeyboard
+  );
+});
+
+// ─── MAIN MENU ───────────────────────────────────────────────
+bot.command('menu', async (ctx) => {
+  await ctx.reply('📋 Menu Utama:', userKeyboard);
+});
+
+// ─── ADMIN COMMAND ───────────────────────────────────────────
+bot.command('admin1922', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply('⛔ Akses ditolak.');
+  await ctx.reply('🔐 Panel Admin:', adminKeyboard);
+});
+
+// ─── DAFTAR TUGAS ────────────────────────────────────────────
+bot.action('menu_tasks', async (ctx) => {
+  initSession(ctx);
+  await ctx.answerCbQuery();
+  const db = loadDB();
+  const userId = ctx.from.id.toString();
+  const user = getUser(db, userId, ctx);
+  const activeTasks = db.tasks.filter(t => t.active);
+
+  if (activeTasks.length === 0) {
+    return ctx.reply('😔 Belum ada tugas tersedia saat ini. Coba lagi nanti!');
+  }
+
+  const latest5 = activeTasks.slice(-5).reverse();
+  let msg = '💰 <b>DAFTAR TUGAS TERSEDIA</b>\n\n';
+  const buttons = [];
+
+  for (const task of latest5) {
+    const done = user.completedTasks.includes(task.id);
+    msg += `📌 <b>${task.name}</b>\n`;
+    msg += `   💵 Reward: Rp${task.reward.toLocaleString('id-ID')}\n`;
+    msg += `   ${done ? '✅ Sudah dikerjakan' : '🔓 Tersedia'}\n\n`;
+    if (!done) {
+      buttons.push([Markup.button.callback(`🔗 Ambil Tugas: ${task.name}`, `take_task_${task.id}`)]);
+    }
+  }
+
+  if (buttons.length === 0) {
+    msg += '✅ Kamu sudah mengerjakan semua tugas yang tersedia!';
+    return ctx.replyWithHTML(msg);
+  }
+
+  await ctx.replyWithHTML(msg, Markup.inlineKeyboard(buttons));
+  saveDB(db);
+});
+
+bot.action(/^take_task_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery('⏳ Memproses...');
+  const taskId = ctx.match[1];
+  const db = loadDB();
+  const userId = ctx.from.id.toString();
+  const user = getUser(db, userId, ctx);
+  const task = db.tasks.find(t => t.id === taskId);
+
+  if (!task || !task.active) return ctx.reply('❌ Tugas tidak ditemukan atau sudah tidak aktif.');
+  if (user.completedTasks.includes(taskId)) return ctx.reply('⚠️ Kamu sudah mengerjakan tugas ini sebelumnya.');
+
+  // Cek apakah user sudah punya link untuk tugas ini
+  if (user.claimedTasks && user.claimedTasks[taskId]) {
+    return ctx.replyWithHTML(
+      `✅ Kamu sudah mengambil tugas ini!\n\n` +
+      `🔗 Link iklanmu: ${user.claimedTasks[taskId]}\n\n` +
+      `📸 Setelah selesai, gunakan menu <b>KONFIRMASI TUGAS</b>.`
+    );
+  }
+
+  try {
+    const safeUrl = await getSafelinkUrl(task.link);
+    if (!user.claimedTasks) user.claimedTasks = {};
+    user.claimedTasks[taskId] = safeUrl;
     saveDB(db);
 
+    // Notif admin
+    await bot.telegram.sendMessage(ADMIN_ID,
+      `📢 User <b>${user.name}</b> (ID: ${userId}) baru mengambil tugas: <b>${task.name}</b>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
     await ctx.replyWithHTML(
-      `👋 Halo, <b>${from.first_name}</b>!\n\n` +
-      (isNew ? `🎊 <b>Selamat datang!</b> Akun kamu sudah terdaftar.\n\n` : `Selamat datang kembali!\n\n`) +
-      `Pilih menu di bawah untuk mulai cari cuan:`,
-      menuUtama()
+      `✅ <b>Tugas berhasil diambil!</b>\n\n` +
+      `📌 Tugas: <b>${task.name}</b>\n` +
+      `💵 Reward: <b>Rp${task.reward.toLocaleString('id-ID')}</b>\n\n` +
+      `🔗 Link iklan unikmu:\n${safeUrl}\n\n` +
+      `📋 <b>Cara kerja:</b>\n` +
+      `1. Klik link di atas dan selesaikan halaman iklan\n` +
+      `2. Catat <b>Kode Rahasia</b> di halaman akhir\n` +
+      `3. Screenshot halaman akhir iklan\n` +
+      `4. Gunakan menu 📸 KONFIRMASI TUGAS\n\n` +
+      `⚠️ Kode rahasia untuk tugas ini akan diverifikasi Admin.`
     );
   } catch (err) {
-    console.error('[/start]', err.message);
-    ctx.reply('Terjadi kesalahan. Ketik /start lagi.');
+    console.error('Safelink error:', err.message);
+    await ctx.reply('❌ Gagal mendapatkan link iklan. Coba lagi nanti.\n\nError: ' + err.message);
   }
 });
 
-
-// ================================================================
-//  💰  MENU: DAFTAR TUGAS
-// ================================================================
-bot.action('menu_tugas', async (ctx) => {
+// ─── KONFIRMASI TUGAS ────────────────────────────────────────
+bot.action('menu_confirm', async (ctx) => {
+  initSession(ctx);
   await ctx.answerCbQuery();
-  const db    = loadDB();
-  const user  = getUser(db, ctx.from);
-  const tugas = (db.tugas || []).filter(t => t.aktif !== false).slice(-MAX_TUGAS_USER).reverse();
-  saveDB(db);
+  const db = loadDB();
+  const userId = ctx.from.id.toString();
+  const user = getUser(db, userId, ctx);
 
-  if (tugas.length === 0) {
-    return ctx.editMessageText(
-      `💰 <b>DAFTAR TUGAS</b>\n\n📭 Belum ada tugas tersedia. Cek kembali nanti!`,
-      { parse_mode: 'HTML', ...btnMenu() }
-    );
+  const claimedTaskIds = Object.keys(user.claimedTasks || {});
+  const pendingTasks = claimedTaskIds.filter(id => !user.completedTasks.includes(id));
+
+  if (pendingTasks.length === 0) {
+    return ctx.reply('ℹ️ Kamu belum mengambil tugas apapun atau semua tugas sudah dikonfirmasi.\n\nAmbil tugas dulu melalui menu 💰 DAFTAR TUGAS.');
   }
 
-  const buttons = tugas.map((t, i) => {
-    const sudah = user.tugasSelesai.includes(t.id);
-    const ambil = (user.tugasAmbil || []).find(a => a.tugasId === t.id);
-    let   label;
-    if      (sudah) label = `✅  ${t.nama}  (Selesai)`;
-    else if (ambil) label = `⏳  ${t.nama}  (Menunggu Konfirmasi)`;
-    else            label = `▶️  ${t.nama}  +${toRp(t.reward)}`;
-    return [Markup.button.callback(label, sudah ? 'noop' : `ambil_${t.id}`)];
-  });
-  buttons.push([Markup.button.callback('🔙  Menu Utama', 'back_main')]);
-
-  await ctx.editMessageText(
-    `💰 <b>DAFTAR TUGAS</b>\n\n` +
-    `Klik tugas untuk mendapatkan <b>link iklan unik</b> milikmu.\n` +
-    `Setelah selesai, temukan <b>Kode Rahasia</b> di halaman akhir iklan\n` +
-    `lalu konfirmasi via menu 📸 <b>Konfirmasi Tugas</b>.\n\n` +
-    `<i>✅ = selesai | ⏳ = menunggu validasi admin</i>`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }
-  );
-});
-
-// Ambil tugas — generate safelink unik untuk user ini
-bot.action(/^ambil_(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('Memproses link unikmu...');
-
-  const tugasId = ctx.match[1];
-  const db      = loadDB();
-  const user    = getUser(db, ctx.from);
-  const tugas   = (db.tugas || []).find(t => t.id === tugasId);
-
-  if (!tugas || tugas.aktif === false) {
-    return ctx.answerCbQuery('Tugas ini sudah tidak tersedia.', { show_alert: true });
-  }
-  if (user.tugasSelesai.includes(tugasId)) {
-    return ctx.answerCbQuery('Kamu sudah menyelesaikan tugas ini!', { show_alert: true });
-  }
-
-  const existing = (user.tugasAmbil || []).find(a => a.tugasId === tugasId);
-  if (existing) {
-    // Tampilkan link yang sudah ada
-    return ctx.editMessageText(
-      `📌 <b>${tugas.nama}</b>\n\n` +
-      `🔗 <b>Link Iklan Unikmu:</b>\n${existing.safelinkUrl}\n\n` +
-      `💵 Reward: <b>${toRp(tugas.reward)}</b>\n\n` +
-      `<b>Langkah:</b>\n` +
-      `1️⃣  Buka link di atas\n` +
-      `2️⃣  Tunggu hingga halaman akhir muncul\n` +
-      `3️⃣  Catat <b>Kode Rahasia</b> yang tampil\n` +
-      `4️⃣  Screenshot halaman tersebut\n` +
-      `5️⃣  Klik 📸 <b>Konfirmasi Tugas</b> di menu utama\n\n` +
-      `<i>⚠️ Link ini unik untukmu. Jangan bagikan ke orang lain.</i>`,
-      { parse_mode: 'HTML', ...Markup.inlineKeyboard([
-        [Markup.button.callback('📸  Konfirmasi Sekarang', 'menu_konfirmasi')],
-        [Markup.button.callback('🔙  Kembali',              'menu_tugas')],
-      ])}
-    );
-  }
-
-  // Generate safelink baru
-  await ctx.editMessageText(
-    `⏳ Sedang membuat link iklan unik untukmu...\nMohon tunggu sebentar.`,
-    { parse_mode: 'HTML' }
-  );
-
-  const safelinkUrl = await getSafelink(tugas.linkTujuan);
-
-  if (!safelinkUrl) {
-    return ctx.editMessageText(
-      `❌ <b>Gagal membuat link iklan.</b>\n\nSilakan coba lagi dalam beberapa menit atau hubungi admin.`,
-      { parse_mode: 'HTML', ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔄  Coba Lagi',  `ambil_${tugasId}`)],
-        [Markup.button.callback('🔙  Kembali',    'menu_tugas')],
-      ])}
-    );
-  }
-
-  // Simpan link unik ke data user
-  user.tugasAmbil = user.tugasAmbil || [];
-  user.tugasAmbil.push({
-    tugasId,
-    safelinkUrl,
-    ambilAt: new Date().toISOString(),
-  });
-  saveDB(db);
-
-  await ctx.editMessageText(
-    `📌 <b>${tugas.nama}</b>\n\n` +
-    `🔗 <b>Link Iklan Unikmu (simpan baik-baik!):</b>\n<code>${safelinkUrl}</code>\n\n` +
-    `💵 Reward: <b>${toRp(tugas.reward)}</b>\n\n` +
-    `<b>Langkah selanjutnya:</b>\n` +
-    `1️⃣  Buka link di atas\n` +
-    `2️⃣  Tunggu hingga halaman akhir muncul\n` +
-    `3️⃣  Catat <b>Kode Rahasia</b> yang tampil di sana\n` +
-    `4️⃣  Screenshot halaman tersebut sebagai bukti\n` +
-    `5️⃣  Klik 📸 <b>Konfirmasi Tugas</b> di menu utama\n\n` +
-    `<i>⚠️ Link ini unik untukmu. Jangan bagikan!</i>`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([
-      [Markup.button.callback('📸  Konfirmasi Sekarang', 'menu_konfirmasi')],
-      [Markup.button.callback('🔙  Kembali ke Tugas',   'menu_tugas')],
-    ])}
-  );
-});
-
-bot.action('noop', async (ctx) => ctx.answerCbQuery('Tugas ini sudah selesai.'));
-
-
-// ================================================================
-//  📸  MENU: KONFIRMASI TUGAS
-// ================================================================
-bot.action('menu_konfirmasi', async (ctx) => {
-  await ctx.answerCbQuery();
-  const db   = loadDB();
-  const user = getUser(db, ctx.from);
-  saveDB(db);
-
-  // Ambil tugas yang sudah diambil tapi belum selesai
-  const belumSelesai = (user.tugasAmbil || []).filter(
-    a => !user.tugasSelesai.includes(a.tugasId)
-  );
-
-  if (belumSelesai.length === 0) {
-    return ctx.editMessageText(
-      `📸 <b>KONFIRMASI TUGAS</b>\n\n` +
-      `📭 Kamu belum mengambil tugas apapun atau semua sudah selesai.\n\n` +
-      `Ambil tugas dulu dari menu 💰 <b>Daftar Tugas</b>.`,
-      { parse_mode: 'HTML', ...Markup.inlineKeyboard([
-        [Markup.button.callback('💰  Ambil Tugas',  'menu_tugas')],
-        [Markup.button.callback('🔙  Menu Utama',   'back_main')],
-      ])}
-    );
-  }
-
-  const buttons = belumSelesai.map(a => {
-    const info    = (db.tugas || []).find(t => t.id === a.tugasId);
-    const sudahKirim = (db.buktiQueue || []).some(
-      b => b.userId === ctx.from.id && b.tugasId === a.tugasId && b.status === 'pending'
-    );
-    const label = sudahKirim
-      ? `⏳  ${info?.nama || a.tugasId}  (Menunggu Validasi)`
-      : `📸  ${info?.nama || a.tugasId}  (+${toRp(info?.reward || 0)})`;
-    return [Markup.button.callback(label, sudahKirim ? 'noop_konfirm' : `kirim_bukti_${a.tugasId}`)];
-  });
-  buttons.push([Markup.button.callback('🔙  Menu Utama', 'back_main')]);
-
-  await ctx.editMessageText(
-    `📸 <b>KONFIRMASI TUGAS</b>\n\n` +
-    `Pilih tugas yang sudah kamu selesaikan:`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }
-  );
-});
-
-bot.action('noop_konfirm', async (ctx) => {
-  await ctx.answerCbQuery('Bukti tugasmu sedang divalidasi admin. Sabar ya! ⏳', { show_alert: true });
-});
-
-// User memilih tugas untuk dikonfirmasi → minta kode + foto
-bot.action(/^kirim_bukti_(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery();
-  const tugasId = ctx.match[1];
-  const db      = loadDB();
-  const tugas   = (db.tugas || []).find(t => t.id === tugasId);
-
-  ctx.session              = ctx.session || {};
-  ctx.session.konfirmasiId = tugasId;
-  ctx.session.stepKonfirm  = 'kode'; // langkah: minta kode dulu
-
-  await ctx.editMessageText(
-    `📸 <b>KONFIRMASI TUGAS</b>\n` +
-    `📌 ${tugas?.nama || tugasId}\n\n` +
-    `<b>Langkah 1/2:</b> Ketik <b>Kode Rahasia</b> yang kamu temukan di halaman akhir iklan:\n\n` +
-    `<i>Kode berupa kombinasi huruf/angka. Tulis dengan benar!</i>`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('❌  Batal', 'batal_konfirm')]]) }
-  );
-});
-
-bot.action('batal_konfirm', async (ctx) => {
-  await ctx.answerCbQuery();
-  ctx.session              = ctx.session || {};
-  ctx.session.konfirmasiId = null;
-  ctx.session.stepKonfirm  = null;
-  await ctx.editMessageText('❌ Konfirmasi dibatalkan.', menuUtama());
-});
-
-
-// ================================================================
-//  📢  MENU: PASANG IKLAN
-// ================================================================
-bot.action('menu_iklan', async (ctx) => {
-  await ctx.answerCbQuery();
-  await ctx.editMessageText(
-    `📢 <b>PASANG IKLAN</b>\n\n` +
-    `Promosikan link, produk, atau channel kamu ke semua member!\n\n` +
-    `<b>Paket Tersedia:</b>\n` +
-    `📌 Broadcast 1x ke semua user  → <b>Rp10.000</b>\n` +
-    `📌 Iklan di Daftar Tugas 7 hari → <b>Rp25.000</b>\n\n` +
-    `<b>Cara Order:</b>\n` +
-    `1. Hubungi Admin via tombol di bawah\n` +
-    `2. Kirim link & materi iklanmu\n` +
-    `3. Transfer sesuai paket\n` +
-    `4. Iklan langsung tayang!\n\n` +
-    `<i>Slot terbatas. Hubungi admin sekarang!</i>`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([
-      [Markup.button.url(`💬  Hubungi Admin (${ADMIN_USERNAME})`, `https://t.me/${BOT_USERNAME}`)],
-      [Markup.button.callback('🔙  Menu Utama', 'back_main')],
-    ])}
-  );
-});
-
-
-// ================================================================
-//  👤  MENU: PROFIL
-// ================================================================
-bot.action('menu_profil', async (ctx) => {
-  await ctx.answerCbQuery();
-  const db   = loadDB();
-  const user = getUser(db, ctx.from);
-  saveDB(db);
-
-  const selesai = user.tugasSelesai.length;
-  const pending = (db.buktiQueue || []).filter(
-    b => b.userId === ctx.from.id && b.status === 'pending'
-  ).length;
-  const tgl = new Date(user.joinedAt).toLocaleDateString('id-ID', {
-    day: '2-digit', month: 'long', year: 'numeric'
+  const buttons = pendingTasks.map(tid => {
+    const task = db.tasks.find(t => t.id === tid);
+    return [Markup.button.callback(`📸 Konfirmasi: ${task ? task.name : tid}`, `confirm_task_${tid}`)];
   });
 
-  await ctx.editMessageText(
+  ctx.session.confirmStep = null;
+  await ctx.reply('Pilih tugas yang ingin dikonfirmasi:', Markup.inlineKeyboard(buttons));
+});
+
+bot.action(/^confirm_task_(.+)$/, async (ctx) => {
+  initSession(ctx);
+  await ctx.answerCbQuery();
+  const taskId = ctx.match[1];
+  const db = loadDB();
+  const task = db.tasks.find(t => t.id === taskId);
+  if (!task) return ctx.reply('❌ Tugas tidak ditemukan.');
+
+  ctx.session.confirmStep = 'awaiting_code';
+  ctx.session.confirmTaskId = taskId;
+
+  await ctx.replyWithHTML(
+    `📝 <b>Konfirmasi Tugas: ${task.name}</b>\n\n` +
+    `Langkah 1: Kirim <b>Kode Rahasia</b> yang kamu temukan di halaman akhir iklan.`
+  );
+});
+
+// ─── PROFILE ─────────────────────────────────────────────────
+bot.action('menu_profile', async (ctx) => {
+  await ctx.answerCbQuery();
+  const db = loadDB();
+  const userId = ctx.from.id.toString();
+  const user = getUser(db, userId, ctx);
+  saveDB(db);
+
+  await ctx.replyWithHTML(
     `👤 <b>PROFIL SAYA</b>\n\n` +
-    `📛  Nama       : <b>${user.firstName}</b>\n` +
-    `🆔  ID          : <code>${user.userId}</code>\n` +
-    `👤  Username   : @${user.username}\n` +
-    `💰  Saldo      : <b>${toRp(user.saldo)}</b>\n` +
-    `✅  Tugas OK   : <b>${selesai} tugas</b>\n` +
-    `⏳  Pending    : <b>${pending} tugas</b>\n` +
-    `👫  Referral   : <b>${user.referralCount} orang</b>\n` +
-    `📅  Bergabung  : <b>${tgl}</b>`,
-    { parse_mode: 'HTML', ...btnMenu() }
+    `👋 Nama: <b>${user.name}</b>\n` +
+    `🆔 ID: <code>${userId}</code>\n` +
+    `💰 Saldo: <b>Rp${user.balance.toLocaleString('id-ID')}</b>\n` +
+    `👫 Referral: <b>${user.referrals || 0} orang</b>\n` +
+    `✅ Tugas selesai: <b>${user.completedTasks.length}</b>`
   );
 });
 
-
-// ================================================================
-//  👫  MENU: REFERRAL
-// ================================================================
+// ─── REFERRAL ────────────────────────────────────────────────
 bot.action('menu_referral', async (ctx) => {
   await ctx.answerCbQuery();
-  const db   = loadDB();
-  const user = getUser(db, ctx.from);
-  saveDB(db);
+  const userId = ctx.from.id.toString();
+  const botUsername = 'GroupA1securitybot';
+  const refLink = `https://t.me/${botUsername}?start=ref_${userId}`;
 
-  const link = `https://t.me/${BOT_USERNAME}?start=${ctx.from.id}`;
-
-  await ctx.editMessageText(
+  await ctx.replyWithHTML(
     `👫 <b>UNDANG TEMAN</b>\n\n` +
-    `Ajak temanmu bergabung dan dapatkan <b>${toRp(REFERRAL_BONUS)}</b> per orang!\n\n` +
-    `🔗 <b>Link Referralmu:</b>\n<code>${link}</code>\n\n` +
-    `👥  Sudah bergabung : <b>${user.referralCount} orang</b>\n` +
-    `💵  Total bonus     : <b>${toRp(user.referralCount * REFERRAL_BONUS)}</b>\n\n` +
-    `<i>Copy link di atas dan bagikan ke teman-temanmu!</i>`,
-    { parse_mode: 'HTML', ...btnMenu() }
+    `Dapatkan <b>Rp100</b> setiap kali teman bergabung menggunakan link referral kamu!\n\n` +
+    `🔗 Link referralmu:\n<code>${refLink}</code>\n\n` +
+    `Salin dan bagikan ke teman-temanmu!`
   );
 });
 
-
-// ================================================================
-//  💸  MENU: TARIK SALDO
-// ================================================================
-bot.action('menu_tarik', async (ctx) => {
+// ─── PASANG IKLAN ────────────────────────────────────────────
+bot.action('menu_ads', async (ctx) => {
   await ctx.answerCbQuery();
-  const db   = loadDB();
-  const user = getUser(db, ctx.from);
-  saveDB(db);
+  await ctx.replyWithHTML(
+    `📢 <b>PASANG IKLAN</b>\n\n` +
+    `Ingin mempromosikan link/produk/layananmu kepada ribuan pengguna bot ini?\n\n` +
+    `📩 Hubungi admin: @xuantionzang\n\n` +
+    `Informasi yang perlu disiapkan:\n` +
+    `• Link yang ingin dipromosikan\n` +
+    `• Deskripsi singkat\n` +
+    `• Budget promosi\n\n` +
+    `Admin akan membantu kamu mengatur paket iklan yang sesuai.`
+  );
+});
 
-  if (user.saldo < MIN_WITHDRAW) {
-    return ctx.editMessageText(
+// ─── TARIK SALDO ─────────────────────────────────────────────
+bot.action('menu_withdraw', async (ctx) => {
+  initSession(ctx);
+  await ctx.answerCbQuery();
+  const db = loadDB();
+  const userId = ctx.from.id.toString();
+  const user = getUser(db, userId, ctx);
+
+  if (user.balance < 20000) {
+    return ctx.replyWithHTML(
       `💸 <b>TARIK SALDO</b>\n\n` +
-      `❌ Saldo belum mencukupi!\n\n` +
-      `💰  Saldo kamu     : <b>${toRp(user.saldo)}</b>\n` +
-      `📋  Minimal tarik  : <b>${toRp(MIN_WITHDRAW)}</b>\n` +
-      `📉  Kurang          : <b>${toRp(MIN_WITHDRAW - user.saldo)}</b>\n\n` +
-      `Yuk selesaikan lebih banyak tugas! 💪`,
-      { parse_mode: 'HTML', ...Markup.inlineKeyboard([
-        [Markup.button.callback('💰  Cari Tugas',  'menu_tugas')],
-        [Markup.button.callback('🔙  Menu Utama',  'back_main')],
-      ])}
+      `❌ Saldo kamu belum mencukupi!\n\n` +
+      `💰 Saldo kamu: <b>Rp${user.balance.toLocaleString('id-ID')}</b>\n` +
+      `📋 Minimum penarikan: <b>Rp20.000</b>\n\n` +
+      `Kerjakan lebih banyak tugas untuk menambah saldo!`
     );
   }
 
-  ctx.session       = ctx.session || {};
-  ctx.session.tarik = true;
-
-  await ctx.editMessageText(
-    `💸 <b>TARIK SALDO</b>\n\n` +
-    `💰  Saldo tersedia : <b>${toRp(user.saldo)}</b>\n\n` +
-    `Ketik nomor <b>DANA / OVO / GoPay</b> kamu:\n\n` +
-    `Contoh: <code>085123456789</code>\n\n` +
-    `⚠️  Pastikan nomor benar sebelum mengirim!\n` +
-    `<i>Proses 1×24 jam hari kerja.</i>`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('❌  Batal', 'batal_tarik')]]) }
+  ctx.session.withdrawStep = 'awaiting_method';
+  await ctx.reply(
+    '💸 Pilih metode pembayaran:',
+    Markup.inlineKeyboard([
+      [Markup.button.callback('DANA', 'wd_dana')],
+      [Markup.button.callback('GoPay', 'wd_gopay')],
+    ])
   );
 });
 
-bot.action('batal_tarik', async (ctx) => {
+bot.action(/^wd_(dana|gopay)$/, async (ctx) => {
+  initSession(ctx);
   await ctx.answerCbQuery();
-  ctx.session       = ctx.session || {};
-  ctx.session.tarik = false;
-  await ctx.editMessageText('❌ Penarikan dibatalkan.', menuUtama());
+  const method = ctx.match[1].toUpperCase();
+  ctx.session.withdrawMethod = method;
+  ctx.session.withdrawStep = 'awaiting_number';
+  await ctx.reply(`📱 Masukkan nomor ${method} kamu (contoh: 08xxxxxxxxxx):`);
 });
 
-
-// ================================================================
-//  🔙  KEMBALI KE MENU
-// ================================================================
-bot.action('back_main', async (ctx) => {
-  await ctx.answerCbQuery();
-  ctx.session = ctx.session || {};
-  ctx.session.tarik        = false;
-  ctx.session.broadcast    = false;
-  ctx.session.konfirmasiId = null;
-  ctx.session.stepKonfirm  = null;
-  ctx.session.addTugas     = null;
-  await ctx.editMessageText(
-    `🏠 <b>MENU UTAMA</b>\n\nPilih menu:`,
-    { parse_mode: 'HTML', ...menuUtama() }
-  );
-});
-
-
-// ================================================================
-//  📨  HANDLER TEKS
-// ================================================================
+// ─── MESSAGE HANDLER ─────────────────────────────────────────
 bot.on('text', async (ctx) => {
-  try {
-    const teks = ctx.message.text.trim();
-    ctx.session = ctx.session || {};
+  initSession(ctx);
 
-    // ── COMMAND ADMIN ──────────────────────────────────────────
-    if (teks === '/admin1922') {
-      if (ctx.from.id !== ADMIN_ID) return ctx.reply('⛔ Akses ditolak.');
-      return ctx.replyWithHTML(
-        `🔐 <b>PANEL ADMIN</b>\n\n` +
-        `Selamat datang, Admin!\n🕐 ${nowId()}`,
-        menuAdmin()
-      );
-    }
-
-    // ── INPUT NOMOR TARIK SALDO ─────────────────────────────────
-    if (ctx.session.tarik) {
-      const noHp = teks.replace(/\D/g, '');
-      if (!/^0[0-9]{9,12}$/.test(noHp)) {
-        return ctx.replyWithHTML(
-          `❌ Format nomor tidak valid!\n\nHarus diawali <b>0</b>, 10–13 digit.\n` +
-          `Contoh: <code>085123456789</code>`
-        );
-      }
-
-      const db   = loadDB();
-      const user = getUser(db, ctx.from);
-      if (user.saldo < MIN_WITHDRAW) {
-        ctx.session.tarik = false;
-        return ctx.reply('❌ Saldo tidak cukup saat ini.');
-      }
-
-      const jumlah = user.saldo;
-      user.saldo   = 0;
-      const wd     = {
-        id       : genId(),
-        userId   : ctx.from.id,
-        username : user.username,
-        firstName: user.firstName,
-        jumlah,
-        ewallet  : noHp,
-        status   : 'pending',
-        createdAt: new Date().toISOString(),
-      };
-      db.withdraws = db.withdraws || [];
-      db.withdraws.push(wd);
-      saveDB(db);
-      ctx.session.tarik = false;
-
-      await ctx.replyWithHTML(
-        `✅ <b>Permintaan Penarikan Terkirim!</b>\n\n` +
-        `💰  Jumlah  : <b>${toRp(jumlah)}</b>\n` +
-        `📱  Nomor   : <code>${noHp}</code>\n` +
-        `⏳  Status  : <b>PENDING</b>\n\n` +
-        `Proses 1×24 jam. Notifikasi dikirim setelah selesai.`,
-        menuUtama()
-      );
-
+  // Admin broadcast step
+  if (ctx.from.id === ADMIN_ID && ctx.session.adminStep === 'broadcast') {
+    const db = loadDB();
+    const msg = ctx.message.text;
+    let sent = 0, failed = 0;
+    for (const uid of Object.keys(db.users)) {
       try {
-        await bot.telegram.sendMessage(ADMIN_ID,
-          `💸 <b>WITHDRAW BARU!</b>\n\n` +
-          `👤 @${user.username} (ID: <code>${ctx.from.id}</code>)\n` +
-          `💰 Jumlah : <b>${toRp(jumlah)}</b>\n` +
-          `📱 Nomor  : <code>${noHp}</code>\n` +
-          `🕐 Waktu  : ${nowId()}\n` +
-          `🆔 WD ID  : <code>${wd.id}</code>`,
-          { parse_mode: 'HTML' }
-        );
-      } catch (_) {}
-      return;
+        await bot.telegram.sendMessage(uid, `📢 <b>Pesan dari Admin:</b>\n\n${msg}`, { parse_mode: 'HTML' });
+        sent++;
+      } catch { failed++; }
     }
-
-    // ── INPUT KODE RAHASIA (Langkah 1 konfirmasi) ──────────────
-    if (ctx.session.konfirmasiId && ctx.session.stepKonfirm === 'kode') {
-      const kodeInput = teks.toUpperCase();
-      const db        = loadDB();
-      const tugas     = (db.tugas || []).find(t => t.id === ctx.session.konfirmasiId);
-
-      if (!tugas) {
-        ctx.session.konfirmasiId = null;
-        ctx.session.stepKonfirm  = null;
-        return ctx.reply('❌ Tugas tidak ditemukan.');
-      }
-
-      if (kodeInput !== (tugas.kodeRahasia || '').toUpperCase()) {
-        return ctx.replyWithHTML(
-          `❌ <b>Kode Rahasia salah!</b>\n\nPeriksa kembali kode yang kamu temukan di halaman akhir iklan.\n\n` +
-          `<i>Ketik ulang kode yang benar:</i>`
-        );
-      }
-
-      // Kode benar → minta screenshot
-      ctx.session.stepKonfirm = 'foto';
-      await ctx.replyWithHTML(
-        `✅ <b>Kode Rahasia benar!</b>\n\n` +
-        `<b>Langkah 2/2:</b> Kirim <b>screenshot</b> halaman akhir iklan sebagai bukti:\n\n` +
-        `<i>Upload foto langsung ke chat ini.</i>`,
-        Markup.inlineKeyboard([[Markup.button.callback('❌  Batal', 'batal_konfirm')]])
-      );
-      return;
-    }
-
-    // ── INPUT TAMBAH TUGAS (Admin) ─────────────────────────────
-    if (ctx.session.addTugas && ctx.from.id === ADMIN_ID) {
-      const step = ctx.session.addTugas;
-
-      if (step.langkah === 1) {
-        step.nama    = teks;
-        step.langkah = 2;
-        return ctx.reply(`✅ Nama: "${teks}"\n\nLangkah 2/4 — Masukkan <b>Link Tujuan</b> (URL lengkap):`, { parse_mode: 'HTML' });
-      }
-      if (step.langkah === 2) {
-        if (!/^https?:\/\/.+/.test(teks)) return ctx.reply('❌ URL tidak valid. Harus diawali https:// atau http://');
-        step.link    = teks;
-        step.langkah = 3;
-        return ctx.reply(`✅ Link: ${teks}\n\nLangkah 3/4 — Masukkan <b>Reward</b> (angka Rupiah, contoh: 500):`, { parse_mode: 'HTML' });
-      }
-      if (step.langkah === 3) {
-        const reward = parseInt(teks.replace(/\D/g, ''));
-        if (!reward || reward <= 0) return ctx.reply('❌ Reward tidak valid. Masukkan angka saja (contoh: 500).');
-        step.reward  = reward;
-        step.langkah = 4;
-        return ctx.reply(`✅ Reward: ${toRp(reward)}\n\nLangkah 4/4 — Masukkan <b>Kode Rahasia</b> untuk tugas ini:`, { parse_mode: 'HTML' });
-      }
-      if (step.langkah === 4) {
-        const db = loadDB();
-        const tugasBaru = {
-          id          : genId(),
-          nama        : step.nama,
-          linkTujuan  : step.link,
-          reward      : step.reward,
-          kodeRahasia : teks.toUpperCase(),
-          aktif       : true,
-          createdAt   : new Date().toISOString(),
-        };
-        db.tugas = db.tugas || [];
-        db.tugas.push(tugasBaru);
-        saveDB(db);
-        ctx.session.addTugas = null;
-
-        return ctx.replyWithHTML(
-          `✅ <b>Tugas Berhasil Ditambahkan!</b>\n\n` +
-          `📌 Nama         : <b>${tugasBaru.nama}</b>\n` +
-          `🔗 Link Tujuan  : ${tugasBaru.linkTujuan}\n` +
-          `💵 Reward       : <b>${toRp(tugasBaru.reward)}</b>\n` +
-          `🔑 Kode Rahasia : <b>${tugasBaru.kodeRahasia}</b>\n` +
-          `🆔 ID Tugas     : <code>${tugasBaru.id}</code>`,
-          menuAdmin()
-        );
-      }
-    }
-
-    // ── INPUT BROADCAST ─────────────────────────────────────────
-    if (ctx.session.broadcast && ctx.from.id === ADMIN_ID) {
-      ctx.session.broadcast = false;
-      const db    = loadDB();
-      const users = Object.values(db.users);
-      let ok = 0, fail = 0;
-
-      await ctx.reply(`📡 Mengirim ke ${users.length} user...`);
-
-      for (const u of users) {
-        try {
-          await bot.telegram.sendMessage(u.userId,
-            `📢 <b>PENGUMUMAN</b>\n\n${teks}`,
-            { parse_mode: 'HTML' }
-          );
-          ok++;
-        } catch (_) { fail++; }
-        await new Promise(r => setTimeout(r, 60));
-      }
-
-      return ctx.replyWithHTML(
-        `✅ <b>Broadcast Selesai!</b>\n\n📨 Terkirim: <b>${ok}</b>\n❌ Gagal: <b>${fail}</b>`
-      );
-    }
-
-  } catch (err) {
-    console.error('[text handler]', err.message);
-    ctx.reply('⚠️ Terjadi kesalahan. Silakan coba lagi.');
+    ctx.session.adminStep = null;
+    return ctx.reply(`✅ Broadcast selesai!\n✅ Terkirim: ${sent}\n❌ Gagal: ${failed}`);
   }
-});
 
+  // Admin add task steps
+  if (ctx.from.id === ADMIN_ID && ctx.session.adminStep) {
+    const step = ctx.session.adminStep;
+    const text = ctx.message.text;
 
-// ================================================================
-//  📸  HANDLER FOTO (Screenshot Bukti Tugas)
-// ================================================================
-bot.on('photo', async (ctx) => {
-  try {
-    ctx.session = ctx.session || {};
-
-    if (!ctx.session.konfirmasiId || ctx.session.stepKonfirm !== 'foto') {
-      return; // Abaikan foto jika tidak dalam alur konfirmasi
+    if (step === 'task_name') {
+      ctx.session.newTask = { name: text };
+      ctx.session.adminStep = 'task_link';
+      return ctx.reply('🔗 Masukkan Link Tujuan (URL asli yang akan diubah menjadi link iklan):');
     }
+    if (step === 'task_link') {
+      ctx.session.newTask.link = text;
+      ctx.session.adminStep = 'task_reward';
+      return ctx.reply('💵 Masukkan Reward (angka saja, contoh: 1000):');
+    }
+    if (step === 'task_reward') {
+      const reward = parseInt(text);
+      if (isNaN(reward)) return ctx.reply('❌ Masukkan angka yang valid!');
+      ctx.session.newTask.reward = reward;
+      ctx.session.adminStep = 'task_secret';
+      return ctx.reply('🔑 Masukkan Kode Rahasia untuk tugas ini:');
+    }
+    if (step === 'task_secret') {
+      ctx.session.newTask.secretCode = text;
+      const db = loadDB();
+      const task = {
+        id: 'task_' + Date.now(),
+        ...ctx.session.newTask,
+        active: true,
+        createdAt: Date.now(),
+      };
+      db.tasks.push(task);
+      saveDB(db);
+      ctx.session.adminStep = null;
+      ctx.session.newTask = null;
+      return ctx.replyWithHTML(
+        `✅ <b>Tugas berhasil ditambahkan!</b>\n\n` +
+        `📌 Nama: ${task.name}\n` +
+        `🔗 Link: ${task.link}\n` +
+        `💵 Reward: Rp${task.reward.toLocaleString('id-ID')}\n` +
+        `🔑 Kode Rahasia: <code>${task.secretCode}</code>`
+      );
+    }
+  }
 
-    const tugasId = ctx.session.konfirmasiId;
-    const db      = loadDB();
-    const user    = getUser(db, ctx.from);
-    const tugas   = (db.tugas || []).find(t => t.id === tugasId);
+  // User: confirm task - awaiting secret code
+  if (ctx.session.confirmStep === 'awaiting_code' && ctx.session.confirmTaskId) {
+    const db = loadDB();
+    const taskId = ctx.session.confirmTaskId;
+    const task = db.tasks.find(t => t.id === taskId);
+    const enteredCode = ctx.message.text.trim();
 
-    if (!tugas) {
-      ctx.session.konfirmasiId = null;
-      ctx.session.stepKonfirm  = null;
+    if (!task) {
+      ctx.session.confirmStep = null;
       return ctx.reply('❌ Tugas tidak ditemukan.');
     }
 
-    // Cek sudah kirim bukti untuk tugas ini
-    const sudahKirim = (db.buktiQueue || []).some(
-      b => b.userId === ctx.from.id && b.tugasId === tugasId && b.status === 'pending'
-    );
-    if (sudahKirim) {
-      ctx.session.konfirmasiId = null;
-      ctx.session.stepKonfirm  = null;
-      return ctx.reply('⏳ Bukti untuk tugas ini sudah kamu kirim dan sedang divalidasi admin.');
+    if (enteredCode.toLowerCase() !== task.secretCode.toLowerCase()) {
+      return ctx.replyWithHTML('❌ <b>Kode Rahasia salah!</b>\n\nCoba masukkan kode yang benar atau cek kembali halaman iklan.');
     }
 
-    const photos = ctx.message.photo;
-    const fileId = photos[photos.length - 1].file_id;
-    const buktiId = genId();
+    ctx.session.confirmStep = 'awaiting_screenshot';
+    ctx.session.confirmCode = enteredCode;
+    return ctx.reply('✅ Kode benar! Langkah 2: Kirim screenshot bukti sebagai foto.');
+  }
 
-    db.buktiQueue = db.buktiQueue || [];
-    db.buktiQueue.push({
-      id       : buktiId,
-      userId   : ctx.from.id,
-      username : user.username,
-      firstName: user.firstName,
-      tugasId,
-      tugasNama: tugas.nama,
-      reward   : tugas.reward,
-      fileId,
-      status   : 'pending',
-      createdAt: new Date().toISOString(),
-    });
+  // Withdraw: awaiting number
+  if (ctx.session.withdrawStep === 'awaiting_number') {
+    const db = loadDB();
+    const userId = ctx.from.id.toString();
+    const user = getUser(db, userId, ctx);
+    const number = ctx.message.text.trim();
+    const method = ctx.session.withdrawMethod;
+
+    ctx.session.withdrawStep = null;
+    ctx.session.withdrawMethod = null;
+
+    await bot.telegram.sendMessage(ADMIN_ID,
+      `💸 <b>PERMINTAAN TARIK SALDO</b>\n\n` +
+      `👤 Nama: ${user.name}\n` +
+      `🆔 ID: ${userId}\n` +
+      `💰 Jumlah: Rp${user.balance.toLocaleString('id-ID')}\n` +
+      `📱 Metode: ${method}\n` +
+      `📱 Nomor: ${number}\n\n` +
+      `Username: @${user.username || '-'}`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+
+    return ctx.reply(`✅ Permintaan tarik saldo Rp${user.balance.toLocaleString('id-ID')} ke ${method} (${number}) telah dikirim ke admin.\n\nProses 1x24 jam kerja.`);
+  }
+});
+
+// ─── PHOTO HANDLER (Konfirmasi screenshot) ───────────────────
+bot.on('photo', async (ctx) => {
+  initSession(ctx);
+
+  if (ctx.session.confirmStep === 'awaiting_screenshot' && ctx.session.confirmTaskId) {
+    const db = loadDB();
+    const userId = ctx.from.id.toString();
+    const user = getUser(db, userId, ctx);
+    const taskId = ctx.session.confirmTaskId;
+    const task = db.tasks.find(t => t.id === taskId);
+
+    if (!task) {
+      ctx.session.confirmStep = null;
+      return ctx.reply('❌ Tugas tidak ditemukan.');
+    }
+
+    const photoId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+    const submissionId = 'sub_' + Date.now();
+
+    const submission = {
+      id: submissionId,
+      userId,
+      taskId,
+      taskName: task.name,
+      reward: task.reward,
+      photoId,
+      code: ctx.session.confirmCode,
+      status: 'pending',
+      createdAt: Date.now(),
+    };
+
+    db.submissions.push(submission);
     saveDB(db);
 
-    ctx.session.konfirmasiId = null;
-    ctx.session.stepKonfirm  = null;
+    ctx.session.confirmStep = null;
+    ctx.session.confirmTaskId = null;
+    ctx.session.confirmCode = null;
 
-    await ctx.replyWithHTML(
-      `📸 <b>Bukti Diterima!</b>\n\n` +
-      `📌 Tugas    : <b>${tugas.nama}</b>\n` +
-      `💵 Reward   : <b>${toRp(tugas.reward)}</b>\n` +
-      `⏳ Status   : <b>Menunggu Validasi Admin</b>\n\n` +
-      `Kamu akan dapat notifikasi setelah admin memvalidasi. Terima kasih! 🙏`,
-      menuUtama()
-    );
+    // Kirim ke admin
+    await bot.telegram.sendPhoto(ADMIN_ID, photoId, {
+      caption:
+        `📸 <b>BUKTI TUGAS BARU</b>\n\n` +
+        `👤 User: ${user.name} (ID: ${userId})\n` +
+        `📌 Tugas: ${task.name}\n` +
+        `💵 Reward: Rp${task.reward.toLocaleString('id-ID')}\n` +
+        `🔑 Kode: ${submission.code}\n` +
+        `🆔 Submission ID: ${submissionId}`,
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('✅ TERIMA', `approve_${submissionId}`)],
+        [Markup.button.callback('❌ TOLAK', `reject_${submissionId}`)],
+      ]),
+    }).catch(async () => {
+      await ctx.reply('⚠️ Gagal mengirim bukti ke admin. Hubungi @xuantionzang secara langsung.');
+    });
 
-    // ── Kirim notifikasi + foto ke admin ──────────────────────
-    try {
-      await bot.telegram.sendMessage(ADMIN_ID,
-        `🔔 <b>BUKTI TUGAS MASUK!</b>\n\n` +
-        `👤  User     : @${user.username} (ID: <code>${ctx.from.id}</code>)\n` +
-        `📌  Tugas    : <b>${tugas.nama}</b>\n` +
-        `💵  Reward   : <b>${toRp(tugas.reward)}</b>\n` +
-        `🕐  Waktu    : ${nowId()}\n\n` +
-        `👇 Lihat foto bukti di bawah ini:`,
-        { parse_mode: 'HTML' }
-      );
-      await bot.telegram.sendPhoto(ADMIN_ID, fileId, {
-        caption:
-          `📸 Bukti dari @${user.username}\n` +
-          `📌 Tugas: <b>${tugas.nama}</b>\n` +
-          `💵 Reward: <b>${toRp(tugas.reward)}</b>`,
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback(`✅  TERIMA (+${toRp(tugas.reward)})`, `val_ok_${buktiId}`)],
-          [Markup.button.callback(`❌  TOLAK`,                            `val_no_${buktiId}`)],
-        ])
-      });
-    } catch (_) {}
-
-  } catch (err) {
-    console.error('[photo handler]', err.message);
-    ctx.reply('⚠️ Terjadi kesalahan saat mengunggah foto.');
+    await ctx.reply('✅ Bukti berhasil dikirim! Tunggu validasi dari admin (biasanya 1x24 jam).');
   }
 });
 
+// ─── ADMIN: APPROVE / REJECT ─────────────────────────────────
+bot.action(/^approve_(.+)$/, async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔ Bukan admin!');
+  await ctx.answerCbQuery('✅ Memproses...');
 
-// ================================================================
-//  ✅  VALIDASI CEPAT DARI FOTO (Tombol di chat admin)
-// ================================================================
-bot.action(/^val_ok_(.+)$/, async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
+  const submissionId = ctx.match[1];
+  const db = loadDB();
+  const sub = db.submissions.find(s => s.id === submissionId);
 
-  const buktiId = ctx.match[1];
-  const db      = loadDB();
-  const bukti   = (db.buktiQueue || []).find(b => b.id === buktiId);
+  if (!sub) return ctx.reply('❌ Submission tidak ditemukan.');
+  if (sub.status !== 'pending') return ctx.reply('⚠️ Submission ini sudah diproses sebelumnya.');
 
-  if (!bukti) return ctx.answerCbQuery('Data tidak ditemukan.', { show_alert: true });
-  if (bukti.status !== 'pending') return ctx.answerCbQuery('Bukti ini sudah diproses.', { show_alert: true });
-
-  const user = db.users[String(bukti.userId)];
-  if (!user) return ctx.answerCbQuery('User tidak ditemukan.', { show_alert: true });
-
-  bukti.status       = 'diterima';
-  user.saldo        += bukti.reward;
-  user.tugasSelesai  = user.tugasSelesai || [];
-  if (!user.tugasSelesai.includes(bukti.tugasId)) user.tugasSelesai.push(bukti.tugasId);
-  saveDB(db);
-
-  await ctx.answerCbQuery(`✅ +${toRp(bukti.reward)} diberikan ke @${bukti.username}`);
-  await ctx.editMessageCaption(
-    `✅ <b>DIVALIDASI</b>\n\n` +
-    `👤  @${bukti.username}\n` +
-    `📌  ${bukti.tugasNama}\n` +
-    `💰  +${toRp(bukti.reward)}\n` +
-    `🕐  ${nowId()}`,
-    { parse_mode: 'HTML' }
-  );
-
-  try {
-    await bot.telegram.sendMessage(bukti.userId,
-      `✅ <b>Tugasmu Disetujui!</b>\n\n` +
-      `📌 ${bukti.tugasNama}\n` +
-      `💰 +${toRp(bukti.reward)} sudah masuk ke saldo!\n` +
-      `💳 Saldo sekarang: <b>${toRp(user.saldo)}</b>\n\n` +
-      `Yuk ambil tugas lagi! 💪`,
-      { parse_mode: 'HTML' }
-    );
-  } catch (_) {}
-});
-
-bot.action(/^val_no_(.+)$/, async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
-
-  const buktiId = ctx.match[1];
-  const db      = loadDB();
-  const bukti   = (db.buktiQueue || []).find(b => b.id === buktiId);
-
-  if (!bukti) return ctx.answerCbQuery('Data tidak ditemukan.', { show_alert: true });
-  if (bukti.status !== 'pending') return ctx.answerCbQuery('Bukti ini sudah diproses.', { show_alert: true });
-
-  bukti.status = 'ditolak';
-  // Hapus dari tugasAmbil agar user bisa coba lagi
-  const user = db.users[String(bukti.userId)];
+  sub.status = 'approved';
+  const user = db.users[sub.userId];
   if (user) {
-    user.tugasAmbil = (user.tugasAmbil || []).filter(a => a.tugasId !== bukti.tugasId);
+    user.balance += sub.reward;
+    if (!user.completedTasks.includes(sub.taskId)) {
+      user.completedTasks.push(sub.taskId);
+    }
   }
   saveDB(db);
 
-  await ctx.answerCbQuery('❌ Bukti ditolak.');
-  await ctx.editMessageCaption(
-    `❌ <b>DITOLAK</b>\n\n` +
-    `👤  @${bukti.username}\n` +
-    `📌  ${bukti.tugasNama}\n` +
-    `🕐  ${nowId()}`,
+  await bot.telegram.sendMessage(sub.userId,
+    `🎉 <b>SELAMAT! Tugas Disetujui!</b>\n\n` +
+    `📌 Tugas: ${sub.taskName}\n` +
+    `💵 Reward: <b>Rp${sub.reward.toLocaleString('id-ID')}</b> telah ditambahkan ke saldo kamu!\n\n` +
+    `💰 Saldo baru: Rp${(user?.balance || 0).toLocaleString('id-ID')}`,
     { parse_mode: 'HTML' }
-  );
+  ).catch(() => {});
 
-  try {
-    await bot.telegram.sendMessage(bukti.userId,
-      `❌ <b>Bukti Tugasmu Ditolak</b>\n\n` +
-      `📌 ${bukti.tugasNama}\n\n` +
-      `Screenshot tidak memenuhi syarat. Silakan ambil tugasnya lagi dan kirim bukti yang lebih jelas.`,
-      { parse_mode: 'HTML' }
-    );
-  } catch (_) {}
+  await ctx.editMessageCaption(
+    (ctx.callbackQuery.message.caption || '') + '\n\n✅ <b>SUDAH DISETUJUI</b>',
+    { parse_mode: 'HTML' }
+  ).catch(() => {});
+  await ctx.reply(`✅ Reward Rp${sub.reward.toLocaleString('id-ID')} berhasil dikirim ke user ${sub.userId}.`);
 });
 
+bot.action(/^reject_(.+)$/, async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔ Bukan admin!');
+  await ctx.answerCbQuery('❌ Memproses...');
 
-// ================================================================
-//  🔧  ADMIN ACTIONS
-// ================================================================
+  const submissionId = ctx.match[1];
+  const db = loadDB();
+  const sub = db.submissions.find(s => s.id === submissionId);
 
-// ── TAMBAH TUGAS ────────────────────────────────────────────────
-bot.action('adm_tambah', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
-  await ctx.answerCbQuery();
-  ctx.session          = ctx.session || {};
-  ctx.session.addTugas = { langkah: 1 };
+  if (!sub) return ctx.reply('❌ Submission tidak ditemukan.');
+  if (sub.status !== 'pending') return ctx.reply('⚠️ Submission ini sudah diproses sebelumnya.');
 
-  await ctx.editMessageText(
-    `➕ <b>TAMBAH TUGAS BARU</b>\n\n` +
-    `Langkah 1/4 — Ketik <b>Nama Tugas</b>:\n\n` +
-    `<i>Contoh: Klik Iklan Website A</i>`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('❌  Batal', 'adm_back')]]) }
-  );
+  sub.status = 'rejected';
+  saveDB(db);
+
+  await bot.telegram.sendMessage(sub.userId,
+    `❌ <b>Tugas Ditolak</b>\n\n` +
+    `📌 Tugas: ${sub.taskName}\n\n` +
+    `Bukti yang kamu kirimkan tidak memenuhi syarat. Pastikan screenshot jelas dan kode rahasia benar.\n\n` +
+    `Hubungi admin jika ada pertanyaan: @xuantionzang`,
+    { parse_mode: 'HTML' }
+  ).catch(() => {});
+
+  await ctx.editMessageCaption(
+    (ctx.callbackQuery.message.caption || '') + '\n\n❌ <b>SUDAH DITOLAK</b>',
+    { parse_mode: 'HTML' }
+  ).catch(() => {});
+  await ctx.reply('❌ Submission ditolak.');
 });
 
-// ── VALIDASI BUKTI (panel) ──────────────────────────────────────
-bot.action('adm_validasi', async (ctx) => {
+// ─── ADMIN ACTIONS ───────────────────────────────────────────
+bot.action('admin_add_task', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
+  initSession(ctx);
   await ctx.answerCbQuery();
-
-  const db      = loadDB();
-  const pending = (db.buktiQueue || []).filter(b => b.status === 'pending').slice(0, 6);
-
-  if (pending.length === 0) {
-    return ctx.editMessageText(
-      `✅ Tidak ada bukti yang menunggu validasi.`,
-      { ...Markup.inlineKeyboard([[Markup.button.callback('🔙  Kembali', 'adm_back')]]) }
-    );
-  }
-
-  let teks = `✅ <b>VALIDASI BUKTI</b>\n\n<b>${pending.length}</b> bukti menunggu:\n\n`;
-  const btns = [];
-
-  pending.forEach((b, i) => {
-    teks += `${i + 1}. @${b.username} → <b>${b.tugasNama}</b> (+${toRp(b.reward)})\n`;
-    btns.push([
-      Markup.button.callback(`✅ TERIMA #${i + 1}  (+${toRp(b.reward)})`, `val_ok_${b.id}`),
-      Markup.button.callback(`❌ TOLAK #${i + 1}`,                          `val_no_${b.id}`),
-    ]);
-  });
-
-  btns.push([Markup.button.callback('🔙  Kembali', 'adm_back')]);
-  await ctx.editMessageText(teks, { parse_mode: 'HTML', ...Markup.inlineKeyboard(btns) });
+  ctx.session.adminStep = 'task_name';
+  await ctx.reply('➕ Tambah Tugas Baru\n\nMasukkan Nama Tugas:');
 });
 
-// ── STATISTIK ────────────────────────────────────────────────────
-bot.action('adm_stats', async (ctx) => {
+bot.action('admin_stats', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
   await ctx.answerCbQuery();
+  const db = loadDB();
+  const totalUsers = Object.keys(db.users).length;
+  const totalBalance = Object.values(db.users).reduce((sum, u) => sum + (u.balance || 0), 0);
+  const totalApproved = db.submissions.filter(s => s.status === 'approved').length;
+  const totalPending = db.submissions.filter(s => s.status === 'pending').length;
+  const totalTasks = db.tasks.filter(t => t.active).length;
 
-  const db         = loadDB();
-  const users      = Object.values(db.users);
-  const totalSaldo = users.reduce((s, u) => s + (u.saldo || 0), 0);
-  const totalValid = (db.buktiQueue || []).filter(b => b.status === 'diterima').length;
-  const pendBukti  = (db.buktiQueue || []).filter(b => b.status === 'pending').length;
-  const pendWd     = (db.withdraws  || []).filter(w => w.status === 'pending').length;
-  const totalTugas = (db.tugas      || []).length;
-
-  await ctx.editMessageText(
+  await ctx.replyWithHTML(
     `📊 <b>STATISTIK BOT</b>\n\n` +
-    `👥  Total User          : <b>${users.length}</b>\n` +
-    `💰  Total Saldo Aktif   : <b>${toRp(totalSaldo)}</b>\n` +
-    `📋  Total Tugas         : <b>${totalTugas}</b>\n` +
-    `✅  Tugas Divalidasi    : <b>${totalValid}</b>\n` +
-    `⏳  Bukti Pending       : <b>${pendBukti}</b>\n` +
-    `💳  Withdraw Pending    : <b>${pendWd}</b>\n` +
-    `🕐  Update              : ${nowId()}`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('🔙  Kembali', 'adm_back')]]) }
+    `👥 Total User: <b>${totalUsers}</b>\n` +
+    `📋 Tugas Aktif: <b>${totalTasks}</b>\n` +
+    `✅ Tugas Divalidasi: <b>${totalApproved}</b>\n` +
+    `⏳ Menunggu Validasi: <b>${totalPending}</b>\n` +
+    `💰 Total Saldo User: <b>Rp${totalBalance.toLocaleString('id-ID')}</b>`
   );
 });
 
-// ── BROADCAST ────────────────────────────────────────────────────
-bot.action('adm_broadcast', async (ctx) => {
+bot.action('admin_broadcast', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
+  initSession(ctx);
   await ctx.answerCbQuery();
-  ctx.session           = ctx.session || {};
-  ctx.session.broadcast = true;
-  await ctx.editMessageText(
-    `📢 <b>BROADCAST</b>\n\nKetik pesan yang ingin dikirim ke semua user:`,
-    { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('❌  Batal', 'adm_back')]]) }
-  );
+  ctx.session.adminStep = 'broadcast';
+  await ctx.reply('📢 Masukkan pesan yang ingin di-broadcast ke semua user:');
 });
 
-// ── DOWNLOAD DATA ────────────────────────────────────────────────
-bot.action('adm_download', async (ctx) => {
+bot.action('admin_export', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
-  await ctx.answerCbQuery('Membuat file...');
-
-  const db    = loadDB();
-  const users = Object.values(db.users);
-
-  let isi  = `DATA USER BOT CARI CUAN\n`;
-  isi     += `Diekspor : ${nowId()}\n`;
-  isi     += `Total    : ${users.length} user\n`;
-  isi     += '='.repeat(72) + '\n';
-  isi     += `${'No'.padEnd(4)} | ${'User ID'.padEnd(12)} | ${'Username'.padEnd(20)} | ${'Nama'.padEnd(16)} | Saldo\n`;
-  isi     += '-'.repeat(72) + '\n';
-
-  users.forEach((u, i) => {
-    isi += `${String(i + 1).padEnd(4)} | `;
-    isi += `${String(u.userId).padEnd(12)} | `;
-    isi += `${('@' + u.username).padEnd(20)} | `;
-    isi += `${(u.firstName || '').padEnd(16)} | `;
-    isi += `${toRp(u.saldo)}\n`;
-  });
-
-  isi += '-'.repeat(72) + '\n';
-  isi += `Total saldo beredar: ${toRp(users.reduce((s, u) => s + (u.saldo || 0), 0))}\n`;
-
-  const tmpPath = path.join('/tmp', `data_user_${Date.now()}.txt`);
-  fs.writeFileSync(tmpPath, isi, 'utf8');
-
-  try {
-    await bot.telegram.sendDocument(ADMIN_ID,
-      { source: fs.createReadStream(tmpPath), filename: 'data_user.txt' },
-      { caption: `📥 <b>Data ${users.length} user</b> berhasil diekspor.`, parse_mode: 'HTML' }
-    );
-  } finally {
-    try { fs.unlinkSync(tmpPath); } catch (_) {}
+  await ctx.answerCbQuery('📥 Membuat file...');
+  const db = loadDB();
+  let content = 'ID | Username | Nama | Saldo | Referral | Tugas Selesai\n';
+  content += '─'.repeat(70) + '\n';
+  for (const user of Object.values(db.users)) {
+    content += `${user.id} | @${user.username || '-'} | ${user.name} | Rp${(user.balance || 0).toLocaleString('id-ID')} | ${user.referrals || 0} | ${(user.completedTasks || []).length}\n`;
   }
+
+  const filePath = path.join(__dirname, 'data.txt');
+  fs.writeFileSync(filePath, content, 'utf8');
+
+  await ctx.replyWithDocument({ source: filePath, filename: 'data_user.txt' });
+  fs.unlinkSync(filePath);
 });
 
-// ── KEMBALI KE PANEL ADMIN ───────────────────────────────────────
-bot.action('adm_back', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('⛔');
-  await ctx.answerCbQuery();
-  ctx.session = ctx.session || {};
-  ctx.session.broadcast = false;
-  ctx.session.addTugas  = null;
-  await ctx.editMessageText(
-    `🔐 <b>PANEL ADMIN</b>\n\n🕐 ${nowId()}`,
-    { parse_mode: 'HTML', ...menuAdmin() }
-  );
-});
-
-
-// ================================================================
-//  🛡️  ERROR HANDLER & LAUNCH
-// ================================================================
+// ─── ERROR HANDLER ───────────────────────────────────────────
 bot.catch((err, ctx) => {
-  console.error(`[ERROR][${ctx?.updateType}]`, err.message);
-  try { ctx.reply('⚠️ Terjadi kesalahan. Silakan coba lagi.'); } catch (_) {}
+  console.error('Bot error:', err);
+  ctx.reply('❌ Terjadi kesalahan. Coba lagi nanti.').catch(() => {});
 });
 
-// Startup: pastikan database.json ada
-loadDB();
-console.log(`📁 Database siap: ${DB_FILE}`);
+// ─── LAUNCH ──────────────────────────────────────────────────
+bot.launch().then(() => {
+  console.log('✅ Bot berjalan! Username: @GroupA1securitybot');
+}).catch(err => {
+  console.error('❌ Gagal menjalankan bot:', err);
+});
 
-bot.launch()
-  .then(() => console.log(`🤖 Bot aktif! — ${nowId()}`))
-  .catch(err => { console.error('❌ Gagal launch:', err.message); process.exit(1); });
-
-process.once('SIGINT',  () => bot.stop('SIGINT'));
+process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
