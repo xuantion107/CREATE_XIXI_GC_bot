@@ -1,18 +1,34 @@
 {
-  "name": "groupa1-security-bot",
-  "version": "1.0.0",
-  "description": "Telegram Bot Tugas Iklan - @GroupA1securitybot",
+  "name": "bot-produktif-berhadiah",
+  "version": "2.0.0",
+  "description": "Bot Telegram Produktif Berhadiah - Check-in, Kuis, Task, Referral, Withdraw",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "restart": "pm2 restart bot-produktif",
+    "pm2": "pm2 start index.js --name bot-produktif",
+    "pm2-log": "pm2 logs bot-produktif"
   },
+  "keywords": [
+    "telegram",
+    "bot",
+    "poin",
+    "reward",
+    "kuis",
+    "task",
+    "withdraw"
+  ],
+  "author": "Owner Bot",
+  "license": "MIT",
   "dependencies": {
-    "telegraf": "^4.16.3",
-    "axios": "^1.7.2"
+    "node-telegram-bot-api": "^0.66.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   },
   "engines": {
-    "node": ">=18.0.0"
-  },
-  "author": "Admin @xuantionzang",
-  "license": "ISC"
+    "node": ">=16.0.0"
+  }
 }
