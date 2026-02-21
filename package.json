@@ -1,34 +1,16 @@
 {
-  "name": "bot-produktif-berhadiah",
-  "version": "2.0.0",
-  "description": "Bot Telegram Produktif Berhadiah - Check-in, Kuis, Task, Referral, Withdraw",
-  "main": "index.js",
+  "name": "xuantion-bot",
+  "version": "1.5.0",
+  "description": "WhatsApp Bot Pro by Xuantion",
+  "main": "xuantion.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
-    "restart": "pm2 restart bot-produktif",
-    "pm2": "pm2 start index.js --name bot-produktif",
-    "pm2-log": "pm2 logs bot-produktif"
+    "start": "node xuantion.js"
   },
-  "keywords": [
-    "telegram",
-    "bot",
-    "poin",
-    "reward",
-    "kuis",
-    "task",
-    "withdraw"
-  ],
-  "author": "Owner Bot",
-  "license": "MIT",
   "dependencies": {
-    "node-telegram-bot-api": "^0.66.0",
-    "node-cron": "^3.0.3"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
-  },
-  "engines": {
-    "node": ">=16.0.0"
+    "@whiskeysockets/baileys": "latest",
+    "@hapi/boom": "latest",
+    "pino": "latest",
+    "readline": "latest",
+    "axios": "latest"
   }
 }
