@@ -27,7 +27,7 @@ const os = require('os');
 // ─────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────
-const TG_BOT_TOKEN = '8324023704:AAFw9G9Hf17AFsurCzirAKmwA3yxp95FUgc';
+const TG_BOT_TOKEN = '8324023704:AAGSNzoOwlqHhhFgcuKxiOxEQ8-XSoqG2ZQ';
 const ADMIN_ID = 8496726839;
 const bot = new Telegraf(TG_BOT_TOKEN);
 
@@ -125,7 +125,7 @@ const translations = {
         input_gname: "📝 Masukkan Nama Grup:\n\n_Contoh: Grup Saya_\n_(Nomor otomatis: Grup Saya 01, Grup Saya 02)_",
         input_count: "🔢 Mau buat berapa grup? (1-30):",
         input_join: "➕ Masukkan Link Invite Grup:",
-        input_leave: "🚪 Masukkan ID Grup (JID) untuk keluar:",
+        input_leave: "🚪 Masukkan *Link Grup* WhatsApp yang ingin ditinggalkan:\nContoh: https://chat.whatsapp.com/xxxxx",
         input_kick: "🦵 Masukkan nomor yang ingin di-kick (kode negara tanpa +):\nContoh: 62812xxxxxxxx\n\n_Bot akan kick nomor tersebut dari SEMUA grup._",
         connected: "✅ WhatsApp Terhubung! Bot siap.",
         logout_done: "✅ Logout berhasil dan sesi dihapus.",
@@ -156,7 +156,7 @@ const translations = {
         input_gname: "📝 Enter Group Name:\n\n_Example: My Group_\n_(Numbers auto-added: My Group 01, My Group 02)_",
         input_count: "🔢 How many groups? (1-30):",
         input_join: "➕ Enter Group Invite Link:",
-        input_leave: "🚪 Enter Group ID (JID) to leave:",
+        input_leave: "🚪 Enter *WhatsApp Group Link* to leave:\nExample: https://chat.whatsapp.com/xxxxx",
         input_kick: "🦵 Enter number to kick (country code, no +):\nExample: 62812xxxxxxxx\n\n_Bot will kick from ALL groups._",
         connected: "✅ WhatsApp Connected! Bot is ready.",
         logout_done: "✅ Logout successful and session cleared.",
@@ -595,7 +595,18 @@ async function createGroups(chatId, baseName, count, settings) {
                 await warmupGroup(sock, groupId, groupName, chatId, progressId);
             }
 
-            results.push(`✅ ${groupName}`);
+            // Ambil link grup yang baru dibuat dan kirim ke user
+            try {
+                const inviteCode = await sock.groupInviteCode(groupId);
+                const groupLink = `https://chat.whatsapp.com/${inviteCode}`;
+                results.push(`✅ *${groupName}*\n🔗 ${groupLink}`);
+                // Kirim link langsung ke user tanpa tunggu semua selesai
+                await bot.telegram.sendMessage(chatId,
+                    `🔗 *Link Grup Baru:*\n*${groupName}*\nhttps://chat.whatsapp.com/${inviteCode}`,
+                    { parse_mode: 'Markdown' });
+            } catch(e) {
+                results.push(`✅ ${groupName} _(link tidak bisa diambil)_`);
+            }
         } catch(e) {
             console.error(`Group create error [${chatId}] "${groupName}":`, e.message);
             results.push(`❌ ${groupName} (gagal)`);
@@ -949,11 +960,29 @@ async function handleInputs(ctx) {
     } else if (user.step === 'input_leave') {
         const sock = sockets.get(chatId);
         if (!sock) return ctx.reply(tr.no_session);
+        const raw = ctx.message.text?.trim();
+
+        // Validasi wajib link WhatsApp
+        if (!raw || !raw.includes('chat.whatsapp.com/')) {
+            return ctx.reply(
+                '⚠️ *Bukan link grup WhatsApp!*\n\n' +
+                'Kirim link yang benar:\n`https://chat.whatsapp.com/AbcXyz123`',
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        const inviteCode = raw.split('chat.whatsapp.com/')[1].split(/[?\s/#]/)[0].trim();
         try {
-            await sock.groupLeave(ctx.message.text?.trim());
-            ctx.reply('✅ Berhasil keluar dari grup!');
+            const groupInfo = await sock.groupGetInviteInfo(inviteCode);
+            const groupJid = groupInfo.id;
+            await sock.groupLeave(groupJid);
+            ctx.reply(`✅ Berhasil keluar dari grup *${groupInfo.subject || groupJid}*!`, { parse_mode: 'Markdown' });
         } catch(e) {
-            ctx.reply('❌ Gagal keluar. Pastikan ID grup benar.');
+            ctx.reply(
+                '❌ *Gagal keluar dari grup.*\n\n' +
+                'Kemungkinan:\n• Link kadaluarsa\n• Bot tidak ada di grup\n• Link tidak valid',
+                { parse_mode: 'Markdown' }
+            );
         }
         user.step = null; saveDb();
 
@@ -971,100 +1000,212 @@ async function handleInputs(ctx) {
         );
         enqueueTask(chatId, () => kickFromAllGroups(chatId, phone));
 
-    } else if (user.step === 'addmember_upload') {
-        // Handle upload file .txt
+    } else if (user.step === 'am_upload_admin') {
+        // ── File 1: ADMIN.vcf ──
         const doc = ctx.message.document;
-        if (!doc) {
-            return ctx.reply('⚠️ Harap kirim file .txt bukan teks biasa.');
-        }
-        if (!doc.file_name?.endsWith('.txt') && doc.mime_type !== 'text/plain') {
-            return ctx.reply('⚠️ Format file harus .txt\nContoh: nomor.txt');
-        }
-
-        await ctx.reply('📥 File diterima, memproses daftar nomor...');
+        if (!doc) return ctx.reply('⚠️ Harap kirim file ADMIN.vcf');
 
         try {
-            // Download file dari Telegram
-            const fileLink = await bot.telegram.getFileLink(doc.file_id);
-            const https = require('https');
-            const http = require('http');
+            const fileContent = await downloadTelegramFile(doc.file_id);
+            const contacts = parseVcf(fileContent);
 
-            const fileContent = await new Promise((resolve, reject) => {
-                const protocol = fileLink.href.startsWith('https') ? https : http;
-                protocol.get(fileLink.href, (res) => {
-                    let data = '';
-                    res.on('data', chunk => data += chunk);
-                    res.on('end', () => resolve(data));
-                    res.on('error', reject);
-                });
-            });
-
-            const numbers = parseNumbersFromText(fileContent);
-
-            if (numbers.length === 0) {
-                user.step = null; saveDb();
-                return ctx.reply('❌ Tidak ada nomor valid dalam file.\n\nPastikan format: satu nomor per baris dengan kode negara.');
+            if (contacts.length === 0) {
+                return ctx.reply('❌ Tidak ada kontak valid di file. Pastikan format VCF benar.');
             }
 
-            if (numbers.length > 200) {
-                user.step = null; saveDb();
-                return ctx.reply(`⚠️ Terlalu banyak nomor (${numbers.length}).\nMaks 200 nomor per proses untuk keamanan.`);
-            }
+            // Pisahkan Admin dan Navy berdasarkan nama
+            const admins = contacts.filter(c => c.name.toLowerCase().includes('admin'));
+            const navys = contacts.filter(c => c.name.toLowerCase().includes('navy'));
+            const others = contacts.filter(c =>
+                !c.name.toLowerCase().includes('admin') &&
+                !c.name.toLowerCase().includes('navy')
+            );
 
-            // Simpan nomor ke temp user data
-            user.tmpNumbers = numbers;
-            user.step = 'addmember_choose_group';
+            user.tmpAdminContacts = contacts;
+            user.step = 'am_upload_ctc';
             saveDb();
 
-            // Ambil daftar grup untuk dipilih
-            const sock = sockets.get(chatId);
-            if (!sock) {
-                user.step = null; saveDb();
-                return ctx.reply(t(chatId).no_session);
+            // Tampilkan isi file
+            const adminNames = admins.map(c => `• ${c.name}`).join('\n') || '(tidak ada)';
+            const navyNames = navys.map(c => `• ${c.name}`).join('\n') || '(tidak ada)';
+
+            const previewMsg =
+                `✅ *File ADMIN.vcf diterima!*\n\n` +
+                `👑 *Nama Admin:*\n${adminNames}\n\n` +
+                `⚓ *Nama Navy:*\n${navyNames}\n\n` +
+                `📊 *Jumlah Admin:* ${admins.length}\n` +
+                `📊 *Jumlah Navy:* ${navys.length}\n` +
+                `📊 *Total kontak:* ${contacts.length}\n\n` +
+                `📄 Sekarang kirim *File ke-2* berisi kontak CTC (file VCF bebas nama):`;
+
+            const keyboard = Markup.inlineKeyboard([
+                [Markup.button.callback('✅ NEXT → Kirim File CTC', 'am_confirm_admin')],
+                [Markup.button.callback('❌ Batal', 'back_home')]
+            ]);
+
+            await ctx.reply(previewMsg, { parse_mode: 'Markdown', ...keyboard });
+
+        } catch(e) {
+            console.error('Admin VCF error:', e.message);
+            ctx.reply('❌ Gagal membaca file. Pastikan format VCF valid.');
+        }
+
+    } else if (user.step === 'am_upload_ctc') {
+        // ── File 2: CTC.vcf ──
+        const doc = ctx.message.document;
+        if (!doc) return ctx.reply('⚠️ Harap kirim file VCF kontak CTC.');
+
+        try {
+            const fileContent = await downloadTelegramFile(doc.file_id);
+            const contacts = parseVcf(fileContent);
+
+            if (contacts.length === 0) {
+                return ctx.reply('❌ Tidak ada kontak valid di file VCF.');
             }
 
-            await ctx.reply(`✅ Ditemukan *${numbers.length}* nomor valid.\n\n⏳ Mengambil daftar grup...`, { parse_mode: 'Markdown' });
-
-            const groups = await sock.groupFetchAllParticipating();
-            const entries = Object.entries(groups);
-
-            if (entries.length === 0) {
-                user.step = null; saveDb();
-                return ctx.reply('❌ Tidak ada grup ditemukan. Pastikan sudah bergabung ke grup.');
-            }
-
-            // Simpan daftar grup
-            user.tmpGroups = entries.map(([id, g]) => ({ id, name: g.subject }));
+            // Tampilkan nama file dan info kontak
+            const fileName = doc.file_name || 'kontak.vcf';
+            user.tmpCTCContacts = contacts;
+            user.step = 'am_input_total';
             saveDb();
 
-            // Tampilkan pilihan grup (tombol)
-            const buttons = [];
-            // Tombol "Semua Grup"
-            buttons.push([Markup.button.callback(`📁 SEMUA GRUP (${entries.length} grup)`, 'am_all_groups')]);
-            // Tombol per grup (maks 15 tampil)
-            const displayGroups = entries.slice(0, 15);
-            for (const [id, g] of displayGroups) {
-                const shortName = g.subject.length > 30 ? g.subject.substring(0, 28) + '..' : g.subject;
-                buttons.push([Markup.button.callback(`📌 ${shortName}`, `am_group_${id}`)]);
-            }
-            if (entries.length > 15) {
-                buttons.push([Markup.button.callback(`... dan ${entries.length - 15} grup lainnya (pilih Semua)`, 'am_all_groups')]);
-            }
-            buttons.push([Markup.button.callback('❌ Batal', 'back_home')]);
+            const preview = contacts.slice(0, 5).map(c => `• ${c.name}`).join('\n');
+            const moreCount = contacts.length > 5 ? `\n_...dan ${contacts.length - 5} kontak lainnya_` : '';
 
             await ctx.reply(
-                `📋 *PILIH TARGET GRUP*\n\n` +
-                `Nomor siap: *${numbers.length}*\n` +
-                `Total grup: *${entries.length}*\n\n` +
-                `Pilih grup tujuan:`,
-                { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
+                `✅ *File CTC diterima!*\n\n` +
+                `📄 *Nama file:* ${fileName}\n` +
+                `👤 *Nama CTC (preview):*\n${preview}${moreCount}\n\n` +
+                `📊 *Jumlah kontak:* *${contacts.length}*\n\n` +
+                `🔢 *Berapa kontak yang ingin dimasukkan ke grup?*\n` +
+                `_(Maks ${contacts.length}, ketik angka)_`,
+                { parse_mode: 'Markdown' }
             );
 
         } catch(e) {
-            console.error('File processing error:', e.message);
-            user.step = null; saveDb();
-            ctx.reply('❌ Gagal memproses file. Coba lagi.');
+            console.error('CTC VCF error:', e.message);
+            ctx.reply('❌ Gagal membaca file VCF. Coba lagi.');
         }
+
+    } else if (user.step === 'am_input_total') {
+        // ── Input jumlah total kontak yang dimasukkan ──
+        const total = parseInt(ctx.message.text);
+        const maxContacts = user.tmpCTCContacts?.length || 0;
+
+        if (isNaN(total) || total < 1) {
+            return ctx.reply('⚠️ Masukkan angka yang valid.');
+        }
+        if (total > maxContacts) {
+            return ctx.reply(`⚠️ Maksimal ${maxContacts} kontak (sesuai isi file).`);
+        }
+
+        // Potong kontak sesuai jumlah yang diminta
+        user.tmpCTCContacts = user.tmpCTCContacts.slice(0, total);
+        user.step = 'am_input_batch';
+        saveDb();
+
+        await ctx.reply(
+            `✅ *${total}* kontak akan dimasukkan.\n\n` +
+            `📦 *Berapa kontak per proses?*\n\n` +
+            `Pilih atau ketik angka custom:`,
+            { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+                [Markup.button.callback('1', 'am_batch_1'), Markup.button.callback('2', 'am_batch_2'), Markup.button.callback('3', 'am_batch_3')],
+                [Markup.button.callback('5', 'am_batch_5'), Markup.button.callback('10', 'am_batch_10')],
+                [Markup.button.callback('✏️ Custom (ketik angka)', 'am_batch_custom')]
+            ])}
+        );
+
+    } else if (user.step === 'am_input_batch_custom') {
+        // ── Input batch size custom ──
+        const batchSize = parseInt(ctx.message.text);
+        if (isNaN(batchSize) || batchSize < 1 || batchSize > 20) {
+            return ctx.reply('⚠️ Angka batch 1-20.');
+        }
+        user.tmpBatchSize = batchSize;
+        user.step = null;
+        saveDb();
+        await showGroupSelection(ctx, chatId);
+
+    } else if (user.step === 'am_input_link') {
+        // ── Input link grup WhatsApp ──
+        const raw = ctx.message.text?.trim();
+
+        // Wajib link WhatsApp - tolak jika bukan
+        if (!raw || !raw.includes('chat.whatsapp.com/')) {
+            return ctx.reply(
+                '⚠️ *Bukan link grup WhatsApp!*\n\n' +
+                'Kirim link yang benar, contoh:\n' +
+                '`https://chat.whatsapp.com/AbcXyz123456`\n\n' +
+                '📌 Cek link di: Info Grup → Link Undangan Grup',
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        const sock = sockets.get(chatId);
+        if (!sock) {
+            user.step = null; saveDb();
+            return ctx.reply(t(chatId).no_session);
+        }
+
+        // Ekstrak kode undangan
+        const inviteCode = raw.split('chat.whatsapp.com/')[1].split(/[?\s/#]/)[0].trim();
+        if (!inviteCode || inviteCode.length < 5) {
+            return ctx.reply('⚠️ Kode link tidak valid. Pastikan link lengkap.');
+        }
+
+        await ctx.reply('⏳ Memeriksa link grup...');
+
+        let groupInfo;
+        try {
+            groupInfo = await sock.groupGetInviteInfo(inviteCode);
+        } catch(e) {
+            return ctx.reply(
+                '❌ *Gagal membaca link grup.*\n\n' +
+                'Kemungkinan:\n' +
+                '• Link sudah kadaluarsa / di-reset\n' +
+                '• Bot belum ada di dalam grup\n' +
+                '• Link tidak valid\n\n' +
+                'Coba kirim link lagi.',
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        const targetGroup = { id: groupInfo.id, name: groupInfo.subject || groupInfo.id };
+        const ctcContacts = user.tmpCTCContacts;
+        const adminContacts = user.tmpAdminContacts || [];
+        const batchSize = user.tmpBatchSize || 5;
+        const mode = user.tmpAddMode;
+
+        if (!ctcContacts || ctcContacts.length === 0) {
+            user.step = null; saveDb();
+            return ctx.reply('⚠️ Data kontak tidak ditemukan. Mulai ulang dari awal.');
+        }
+
+        // Bersihkan semua temp data
+        user.step = null; user.tmpCTCContacts = null; user.tmpAdminContacts = null;
+        user.tmpGroups = null; user.tmpBatchSize = null; user.tmpAddMode = null;
+        saveDb();
+
+        const totalAll = ctcContacts.length + adminContacts.length;
+        const estTime = Math.ceil(totalAll * 0.7 / 60); // estimasi menit
+
+        await ctx.reply(
+            `✅ *Grup ditemukan!*\n\n` +
+            `📁 *${targetGroup.name}*\n\n` +
+            (adminContacts.length > 0 ? `👑 Admin+Navy: *${adminContacts.length}* kontak\n` : '') +
+            `👤 CTC: *${ctcContacts.length}* kontak\n` +
+            `📦 Batch: *${batchSize}* per proses\n` +
+            `⏱️ Estimasi selesai: *~${estTime} menit*\n\n` +
+            `🚀 Proses dimulai di background...`,
+            { parse_mode: 'Markdown' }
+        );
+
+        enqueueTask(chatId, async () => {
+            if (mode === 'full' && adminContacts.length > 0) {
+                await autoAddMembersToGroups(chatId, adminContacts, [targetGroup], batchSize);
+            }
+            await autoAddMembersToGroups(chatId, ctcContacts, [targetGroup], batchSize);
+        });
     }
 }
 
@@ -1343,7 +1484,13 @@ bot.action('leave_prompt', (ctx) => {
             { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🔐 Login Sekarang', 'login_menu'), Markup.button.callback('⬅️ Kembali', 'back_home')]]) });
     }
     db.users[ctx.chat.id].step = 'input_leave'; saveDb();
-    ctx.reply(t(ctx.chat.id).input_leave);
+    ctx.editMessageText(
+        '🚪 *KELUAR GRUP*\n\n' +
+        '🔗 Kirim *link grup* WhatsApp yang ingin ditinggalkan.\n\n' +
+        '_Contoh:_\n`https://chat.whatsapp.com/AbcXyz123456`\n\n' +
+        '📌 Cara ambil link: buka grup → Info Grup → Link Undangan',
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Batal', 'back_home')]]) }
+    );
 });
 
 // KICK
@@ -1388,25 +1535,35 @@ bot.action('get_links', async (ctx) => {
 
 
 // ─────────────────────────────────────────────
-// AUTO ADD MEMBER ENGINE
-// Upload file .txt berisi daftar nomor → bot add ke semua/pilihan grup
+// AUTO ADD MEMBER ENGINE v2 - VCF Support
 // ─────────────────────────────────────────────
 
-// Parse file .txt → array nomor bersih
-function parseNumbersFromText(text) {
-    const lines = text.split(/[\n\r,;]+/);
-    const numbers = [];
-    for (const line of lines) {
-        const clean = line.trim().replace(/[^0-9]/g, '').replace(/^0+/, '');
-        if (clean.length >= 8 && clean.length <= 15) {
-            numbers.push(clean);
+// Parse file VCF → array { name, phone }
+function parseVcf(text) {
+    const contacts = [];
+    const cards = text.split(/BEGIN:VCARD/i).filter(c => c.trim());
+    for (const card of cards) {
+        let name = '';
+        let phone = '';
+        const lines = card.split(/\r?\n/);
+        for (const line of lines) {
+            if (line.match(/^FN[;:]/i)) {
+                name = line.split(':').slice(1).join(':').trim();
+            } else if (line.match(/^N[;:]/i) && !name) {
+                const parts = line.split(':').slice(1).join(':').split(';');
+                name = [parts[1], parts[0]].filter(Boolean).join(' ').trim();
+            } else if (line.match(/^TEL[;:]/i)) {
+                phone = line.split(':').slice(1).join(':').replace(/[^0-9]/g, '').replace(/^0+/, '');
+            }
+        }
+        if (phone.length >= 8 && phone.length <= 15) {
+            contacts.push({ name: name || phone, phone });
         }
     }
-    // Hapus duplikat
-    return [...new Set(numbers)];
+    return contacts;
 }
 
-// Pesan sambutan yang dikirim ke grup setiap batch masuk
+// Pesan sambutan batch
 const BATCH_WELCOME_MSGS = [
     "Selamat datang anggota baru! Semoga betah ya 👋",
     "Ada anggota baru nih, halo semuanya! 😊",
@@ -1418,160 +1575,158 @@ const BATCH_WELCOME_MSGS = [
     "Welcome to the group! 🌟"
 ];
 
-async function autoAddMembersToGroups(chatId, numbers, targetGroups) {
+// Download file dari Telegram
+async function downloadTelegramFile(fileId) {
+    const https = require('https');
+    const http = require('http');
+    const fileLink = await bot.telegram.getFileLink(fileId);
+    return new Promise((resolve, reject) => {
+        const protocol = fileLink.href.startsWith('https') ? https : http;
+        protocol.get(fileLink.href, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => resolve(data));
+            res.on('error', reject);
+        });
+    });
+}
+
+// Engine add member utama - support VCF dengan nama kontak
+async function autoAddMembersToGroups(chatId, contacts, targetGroups, batchSize) {
     const sock = sockets.get(chatId);
     if (!sock) {
         await bot.telegram.sendMessage(chatId, t(chatId).no_session);
         return;
     }
 
-    const totalNumbers = numbers.length;
+    const totalContacts = contacts.length;
     const totalGroups = targetGroups.length;
-    const BATCH_SIZE = 5;       // Add 5 orang per batch
-    const BATCH_DELAY_MIN = 12000;  // 12 detik min antar batch
-    const BATCH_DELAY_MAX = 20000;  // 20 detik max antar batch
-    const MSG_DELAY_MIN = 8000;     // 8 detik min sebelum kirim pesan sambutan
-    const MSG_DELAY_MAX = 15000;    // 15 detik max
+    const BATCH_DELAY_MIN = 4000;   // 4 detik antar batch
+    const BATCH_DELAY_MAX = 7000;   // 7 detik max
 
-    // Progress message
     let progressId = null;
     try {
         const m = await bot.telegram.sendMessage(chatId,
             `👥 *AUTO ADD MEMBER DIMULAI*\n\n` +
-            `📋 Total nomor: *${totalNumbers}*\n` +
+            `📋 Total kontak: *${totalContacts}*\n` +
             `📁 Target grup: *${totalGroups}*\n` +
-            `📦 Per batch: *${BATCH_SIZE} orang*\n\n` +
+            `📦 Per batch: *${batchSize} orang*\n\n` +
             `⏳ Memulai proses...`,
             { parse_mode: 'Markdown' });
         progressId = m.message_id;
     } catch(e) {}
 
-    await humanDelay(2000, 3000);
+    await humanDelay(500, 1000);
 
     let totalSuccess = 0;
-    let totalFailed = 0;
-    let totalNotWA = 0;
+    let totalInvalid = 0;
     const groupReports = [];
 
     for (let gi = 0; gi < targetGroups.length; gi++) {
         const { id: groupId, name: groupName } = targetGroups[gi];
         let groupSuccess = 0;
-        let groupFailed = 0;
+        const contactLog = [];
 
-        // Update progress - mulai grup baru
-        if (progressId) {
-            try {
-                await bot.telegram.editMessageText(chatId, progressId, null,
-                    `👥 *AUTO ADD MEMBER*\n\n` +
-                    `📁 Grup *${gi + 1}/${totalGroups}*: _${groupName}_\n` +
-                    `✅ Total berhasil: ${totalSuccess}\n` +
-                    `⏳ Sedang memproses...`,
-                    { parse_mode: 'Markdown' });
-            } catch(e) {}
-        }
+        for (let i = 0; i < contacts.length; i += batchSize) {
+            const batch = contacts.slice(i, i + batchSize);
+            const batchNum = Math.floor(i / batchSize) + 1;
+            const totalBatches = Math.ceil(contacts.length / batchSize);
 
-        // Bagi nomor ke dalam batch
-        for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
-            const batch = numbers.slice(i, i + BATCH_SIZE);
-            const batchJids = batch.map(n => `${n}@s.whatsapp.net`);
-            const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-            const totalBatches = Math.ceil(numbers.length / BATCH_SIZE);
-
-            // Update progress per batch
             if (progressId) {
                 try {
                     await bot.telegram.editMessageText(chatId, progressId, null,
-                        `👥 *AUTO ADD MEMBER*\n\n` +
-                        `📁 Grup *${gi + 1}/${totalGroups}*: _${groupName}_\n` +
-                        `📦 Batch *${batchNum}/${totalBatches}* (${i + 1}-${Math.min(i + BATCH_SIZE, numbers.length)} dari ${totalNumbers})\n` +
-                        `✅ Berhasil masuk: ${groupSuccess}\n` +
-                        `⏳ Menambahkan...`,
+                        `👥 *AUTO ADD*\n📁 Grup *${gi+1}/${totalGroups}*: _${groupName}_\n` +
+                        `📦 Batch *${batchNum}/${totalBatches}*\n✅ Masuk: ${groupSuccess} | ❌ Invalid: ${totalInvalid}`,
                         { parse_mode: 'Markdown' });
                 } catch(e) {}
             }
 
-            // Coba add satu per satu dalam batch (lebih aman)
-            for (const jid of batchJids) {
+            // Add satu per satu
+            for (const contact of batch) {
+                const jid = `${contact.phone}@s.whatsapp.net`;
+                const displayName = contact.name || contact.phone;
                 try {
                     const result = await sock.groupParticipantsUpdate(groupId, [jid], 'add');
-                    // Cek hasil per nomor
-                    if (result && result[0]) {
-                        const status = result[0].status;
-                        if (status === '200' || status === 200) {
-                            groupSuccess++;
-                            totalSuccess++;
-                        } else if (status === '403') {
-                            // Nomor privacy setting tidak bisa di-add
-                            groupFailed++;
-                            totalFailed++;
-                        } else if (status === '404') {
-                            // Bukan pengguna WA
-                            totalNotWA++;
-                        } else {
-                            groupFailed++;
-                            totalFailed++;
-                        }
-                    } else {
+                    const status = result?.[0]?.status;
+
+                    // Status 200 = sukses, lainnya = gagal tapi TETAP LANJUT
+                    if (status === '200' || status === 200 || !status) {
                         groupSuccess++;
                         totalSuccess++;
+                        contactLog.push(`✅ ${displayName}`);
+                    } else if (status === '403') {
+                        // Privacy - tidak bisa di-add, LANJUT
+                        totalInvalid++;
+                        contactLog.push(`⚠️ ${displayName} (privasi)`);
+                    } else if (status === '404') {
+                        // Bukan WA - LANJUT
+                        totalInvalid++;
+                        contactLog.push(`❌ ${displayName} (bukan WA)`);
+                    } else if (status === '408') {
+                        // Timeout - LANJUT
+                        totalInvalid++;
+                        contactLog.push(`⚠️ ${displayName} (timeout)`);
+                    } else {
+                        // Status lain apapun - TETAP LANJUT, jangan kirim undangan
+                        totalInvalid++;
+                        contactLog.push(`⚠️ ${displayName} (invalid)`);
                     }
-                    // Delay kecil antar nomor dalam batch
-                    await humanDelay(1500, 3000);
                 } catch(e) {
-                    console.error(`Add error ${jid} to ${groupId}:`, e.message);
-                    groupFailed++;
-                    totalFailed++;
-                    await humanDelay(2000, 4000);
+                    // Error apapun → LANJUT ke kontak berikutnya
+                    totalInvalid++;
+                    contactLog.push(`❌ ${displayName} (error)`);
+                    console.error(`Add skip [${displayName}]:`, e.message);
                 }
+                // Delay antar kontak (cepat tapi aman)
+                await humanDelay(500, 900);
             }
 
-            // Setelah tiap batch → kirim pesan sambutan (biar natural)
+            // Kirim pesan sambutan setelah tiap batch
             try {
-                const welcomeMsg = BATCH_WELCOME_MSGS[Math.floor(Math.random() * BATCH_WELCOME_MSGS.length)];
-                await sock.sendMessage(groupId, { text: welcomeMsg });
+                await sock.sendMessage(groupId, {
+                    text: BATCH_WELCOME_MSGS[Math.floor(Math.random() * BATCH_WELCOME_MSGS.length)]
+                });
             } catch(e) {}
 
-            // Delay manusiawi antar batch
-            if (i + BATCH_SIZE < numbers.length) {
+            // Delay antar batch
+            if (i + batchSize < contacts.length) {
                 await humanDelay(BATCH_DELAY_MIN, BATCH_DELAY_MAX);
             }
         }
 
-        groupReports.push(`📁 *${groupName}*: ✅ ${groupSuccess} masuk, ❌ ${groupFailed} gagal`);
+        groupReports.push({ name: groupName, success: groupSuccess, log: contactLog });
 
-        // Jeda antar grup (lebih panjang)
+        // Jeda antar grup
         if (gi < targetGroups.length - 1) {
-            if (progressId) {
-                try {
-                    await bot.telegram.editMessageText(chatId, progressId, null,
-                        `✅ Selesai grup *${gi + 1}/${totalGroups}*: _${groupName}_\n⏳ Jeda sebelum grup berikutnya...`,
-                        { parse_mode: 'Markdown' });
-                } catch(e) {}
-            }
-            await humanDelay(20000, 35000); // Jeda 20-35 detik antar grup
+            await humanDelay(8000, 12000); // Jeda antar grup
         }
     }
 
-    // Hapus progress, kirim laporan final
     if (progressId) {
         try { await bot.telegram.deleteMessage(chatId, progressId); } catch(e) {}
     }
 
-    const report =
-        `🎉 *AUTO ADD MEMBER SELESAI!*\n\n` +
-        `📊 *Ringkasan:*\n` +
-        `✅ Berhasil ditambahkan: *${totalSuccess}*\n` +
-        `❌ Gagal (privasi/error): *${totalFailed}*\n` +
-        `⚪ Bukan pengguna WA: *${totalNotWA}*\n\n` +
-        `📋 *Per Grup:*\n${groupReports.join('\n')}\n\n` +
-        `🛡️ _Semua proses sudah pakai delay aman_`;
+    // Kirim laporan per grup
+    for (const gr of groupReports) {
+        const logText = gr.log.join('\n');
+        const summary =
+            `✅ *ADD MEMBER SELESAI*\n` +
+            `📁 Grup: *${gr.name}*\n\n` +
+            `📊 *INFORMASI*\n` +
+            `✅ Kontak berhasil dimasukkan: *${gr.success}*\n` +
+            `❌ Kontak yang invalid: *${totalInvalid}*\n\n` +
+            `📋 *Detail:*\n${logText}`;
 
-    await bot.telegram.sendMessage(chatId, report, { parse_mode: 'Markdown' });
+        // Kirim per bagian jika panjang
+        for (let i = 0; i < summary.length; i += 3800) {
+            await bot.telegram.sendMessage(chatId, summary.substring(i, i + 3800), { parse_mode: 'Markdown' });
+            if (i + 3800 < summary.length) await humanDelay(300, 500);
+        }
+    }
 }
 
-
 // ─────────────────────────────────────────────
-// ADD MEMBER - Action & Handler
+// ADD MEMBER - Actions & Handlers
 // ─────────────────────────────────────────────
 
 bot.action('addmember_prompt', async (ctx) => {
@@ -1583,87 +1738,105 @@ bot.action('addmember_prompt', async (ctx) => {
             { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🔐 Login Sekarang', 'login_menu'), Markup.button.callback('⬅️ Kembali', 'back_home')]]) });
     }
 
-    db.users[chatId].step = 'addmember_upload';
+    // Tampilkan 2 pilihan mode add
+    ctx.editMessageText(
+        `➕ *AUTO ADD MEMBER*\n\nPilih mode penambahan anggota:`,
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+            [Markup.button.callback('👥 ADD ADMIN + NAVY + CTC', 'am_mode_full')],
+            [Markup.button.callback('📋 ADD CTC', 'am_mode_ctc')],
+            [Markup.button.callback('⬅️ Kembali', 'back_home')]
+        ])}
+    );
+});
+
+// ── Mode: ADD CTC saja ──
+bot.action('am_mode_ctc', async (ctx) => {
+    if (!checkAccess(ctx)) return ctx.answerCbQuery();
+    ctx.answerCbQuery();
+    const chatId = ctx.chat.id;
+    db.users[chatId].tmpAddMode = 'ctc';
+    db.users[chatId].step = 'am_upload_ctc';
+    saveDb();
+    ctx.editMessageText(
+        `📋 *MODE: ADD CTC*\n\n` +
+        `📄 Kirim file *.vcf* berisi daftar kontak CTC.\n\n` +
+        `📌 Bot akan baca nama & nomor dari file VCF\n` +
+        `📌 Format nama file bebas (contoh: kontak.vcf)`,
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Batal', 'back_home')]]) }
+    );
+});
+
+// ── Mode: ADD ADMIN + NAVY + CTC ──
+bot.action('am_mode_full', async (ctx) => {
+    if (!checkAccess(ctx)) return ctx.answerCbQuery();
+    ctx.answerCbQuery();
+    const chatId = ctx.chat.id;
+    db.users[chatId].tmpAddMode = 'full';
+    db.users[chatId].tmpAdminContacts = null;
+    db.users[chatId].step = 'am_upload_admin';
+    saveDb();
+    ctx.editMessageText(
+        `👥 *MODE: ADD ADMIN + NAVY + CTC*\n\n` +
+        `📄 *File ke-1:* Kirim file *ADMIN.vcf*\n\n` +
+        `File ini berisi kontak Admin & Navy yang akan dijadikan admin grup.`,
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Batal', 'back_home')]]) }
+    );
+});
+
+// ── Handle pilih grup setelah semua file siap ──
+async function showGroupSelection(ctx, chatId) {
+    const ctcCount = db.users[chatId].tmpCTCContacts?.length || 0;
+    const adminCount = db.users[chatId].tmpAdminContacts?.length || 0;
+
+    // Set step untuk menerima link grup
+    db.users[chatId].step = 'am_input_link';
     saveDb();
 
     await ctx.reply(
-        `➕ *AUTO ADD MEMBER*\n\n` +
-        `📄 Kirim file *.txt* berisi daftar nomor anggota.\n\n` +
-        `*Format file:*\n` +
-        `\`\`\`\n` +
-        `62812xxxxxxxx\n` +
-        `62813xxxxxxxx\n` +
-        `62856xxxxxxxx\n` +
-        `\`\`\`\n\n` +
-        `📌 Satu nomor per baris\n` +
-        `📌 Gunakan kode negara tanpa +\n` +
-        `📌 Maks 100 nomor per proses`,
-        { parse_mode: 'Markdown' }
+        `🔗 *MASUKKAN LINK GRUP WhatsApp*\n\n` +
+        (adminCount > 0 ? `👑 Admin+Navy: *${adminCount}* kontak\n` : '') +
+        `👤 CTC: *${ctcCount}* kontak\n\n` +
+        `📌 Kirim link grup tujuan:\n` +
+        `_Contoh: https://chat.whatsapp.com/xxxxx_\n\n` +
+        `⚠️ Pastikan bot sudah ada di dalam grup tersebut.`,
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Batal', 'back_home')]]) }
+    );
+}
+
+// am_all_groups & am_group removed - now using link input
+
+
+// ── Batch size actions ──
+bot.action('am_confirm_admin', (ctx) => {
+    ctx.answerCbQuery();
+    const chatId = ctx.chat.id;
+    db.users[chatId].step = 'am_upload_ctc';
+    saveDb();
+    ctx.reply(
+        '📄 Kirim *File ke-2*: file VCF berisi kontak CTC.\n\n' +
+        '📌 Nama file bebas (contoh: ctc.vcf, kontak.vcf)',
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('❌ Batal', 'back_home')]]) }
     );
 });
 
-
-// Add member - pilih semua grup
-bot.action('am_all_groups', async (ctx) => {
-    if (!checkAccess(ctx)) return ctx.answerCbQuery();
-    ctx.answerCbQuery();
-    const chatId = ctx.chat.id;
-    const user = db.users[chatId];
-
-    if (!user?.tmpNumbers || !user?.tmpGroups) {
-        return ctx.reply('⚠️ Sesi expired. Silakan upload file lagi.');
-    }
-
-    const numbers = user.tmpNumbers;
-    const groups = user.tmpGroups;
-    user.step = null;
-    user.tmpNumbers = null;
-    user.tmpGroups = null;
-    saveDb();
-
-    await ctx.editMessageText(
-        `🚀 *Memulai Add Member ke SEMUA GRUP*\n\n` +
-        `📋 ${numbers.length} nomor → ${groups.length} grup\n` +
-        `⏳ Proses berjalan di background...`,
-        { parse_mode: 'Markdown' }
-    );
-
-    enqueueTask(chatId, () => autoAddMembersToGroups(chatId, numbers, groups));
+['1','2','3','5','10'].forEach(n => {
+    bot.action(`am_batch_${n}`, async (ctx) => {
+        ctx.answerCbQuery();
+        const chatId = ctx.chat.id;
+        db.users[chatId].tmpBatchSize = parseInt(n);
+        db.users[chatId].step = null;
+        saveDb();
+        await ctx.editMessageText(`✅ Batch size: *${n} kontak/proses*`, { parse_mode: 'Markdown' });
+        await showGroupSelection(ctx, chatId);
+    });
 });
 
-// Add member - pilih satu grup spesifik
-bot.action(/am_group_(.+)/, async (ctx) => {
-    if (!checkAccess(ctx)) return ctx.answerCbQuery();
+bot.action('am_batch_custom', (ctx) => {
     ctx.answerCbQuery();
     const chatId = ctx.chat.id;
-    const groupId = ctx.match[1];
-    const user = db.users[chatId];
-
-    if (!user?.tmpNumbers || !user?.tmpGroups) {
-        return ctx.reply('⚠️ Sesi expired. Silakan upload file lagi.');
-    }
-
-    const numbers = user.tmpNumbers;
-    const selectedGroup = user.tmpGroups.find(g => g.id === groupId);
-
-    if (!selectedGroup) {
-        return ctx.reply('⚠️ Grup tidak ditemukan.');
-    }
-
-    user.step = null;
-    user.tmpNumbers = null;
-    user.tmpGroups = null;
+    db.users[chatId].step = 'am_input_batch_custom';
     saveDb();
-
-    await ctx.editMessageText(
-        `🚀 *Memulai Add Member*\n\n` +
-        `📁 Grup: _${selectedGroup.name}_\n` +
-        `📋 Nomor: ${numbers.length}\n` +
-        `⏳ Proses berjalan...`,
-        { parse_mode: 'Markdown' }
-    );
-
-    enqueueTask(chatId, () => autoAddMembersToGroups(chatId, numbers, [selectedGroup]));
+    ctx.editMessageText('✏️ Ketik jumlah kontak per batch (angka 1-20):', { parse_mode: 'Markdown' });
 });
 
 bot.on(['text', 'photo', 'document'], handleInputs);
