@@ -27,7 +27,7 @@ const os = require('os');
 // ─────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────
-const TG_BOT_TOKEN = '8324023704:AAFw9G9Hf17AFsurCzirAKmwA3yxp95FUgc';
+const TG_BOT_TOKEN = '8324023717AFsurCzirAKmwA3yxp95FUgc';
 const ADMIN_ID = 8496726839;
 const bot = new Telegraf(TG_BOT_TOKEN);
 
